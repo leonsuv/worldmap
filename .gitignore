@@ -1,0 +1,21 @@
+# Data files (tiles, databases)
+data/
+
+# Frontend build output
+frontend/dist/
+frontend/node_modules/
+
+# Rust build output
+backend/target/
+
+# Python virtual environment
+.venv/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
