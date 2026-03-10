@@ -48,31 +48,33 @@ pub async fn list_events(
     State(state): State<Arc<AppState>>,
     Query(q): Query<EventQuery>,
 ) -> Json<Vec<Event>> {
-    let conn = state.cache_db.conn();
-    let sql = if q.active_only.unwrap_or(false) {
-        "SELECT id, name, event_type, lat, lon, radius_km, description, started_at, ended_at, active FROM events WHERE active = 1 ORDER BY started_at DESC"
-    } else {
-        "SELECT id, name, event_type, lat, lon, radius_km, description, started_at, ended_at, active FROM events ORDER BY started_at DESC"
-    };
-    let mut stmt = conn.prepare(sql).unwrap();
-    let items = stmt
-        .query_map([], |row| {
-            Ok(Event {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                event_type: row.get(2)?,
-                lat: row.get(3)?,
-                lon: row.get(4)?,
-                radius_km: row.get(5)?,
-                description: row.get(6)?,
-                started_at: row.get(7)?,
-                ended_at: row.get(8)?,
-                active: row.get::<_, i64>(9)? != 0,
-            })
-        })
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect();
+    let active_only = q.active_only.unwrap_or(false);
+    let items = state.cache_db.run(move |conn| {
+        let sql = if active_only {
+            "SELECT id, name, event_type, lat, lon, radius_km, description, started_at, ended_at, active FROM events WHERE active = 1 ORDER BY started_at DESC"
+        } else {
+            "SELECT id, name, event_type, lat, lon, radius_km, description, started_at, ended_at, active FROM events ORDER BY started_at DESC"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let items = stmt
+            .query_map([], |row| {
+                Ok(Event {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    event_type: row.get(2)?,
+                    lat: row.get(3)?,
+                    lon: row.get(4)?,
+                    radius_km: row.get(5)?,
+                    description: row.get(6)?,
+                    started_at: row.get(7)?,
+                    ended_at: row.get(8)?,
+                    active: row.get::<_, i64>(9)? != 0,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(items)
+    }).await.unwrap_or_default();
     Json(items)
 }
 
@@ -82,30 +84,42 @@ pub async fn create_event(
     Json(body): Json<CreateEvent>,
 ) -> (StatusCode, Json<Event>) {
     let now = chrono::Utc::now().timestamp();
-    let conn = state.cache_db.conn();
-    conn.execute(
-        "INSERT INTO events (name, event_type, lat, lon, radius_km, description, started_at, active) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
-        rusqlite::params![body.name, body.event_type, body.lat, body.lon, body.radius_km, body.description, now],
-    ).unwrap();
-    let id = conn.last_insert_rowid();
+    let event_data = body;
+    let id = state.cache_db.run(move |conn| {
+        conn.execute(
+            "INSERT INTO events (name, event_type, lat, lon, radius_km, description, started_at, active) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
+            rusqlite::params![event_data.name, event_data.event_type, event_data.lat, event_data.lon, event_data.radius_km, event_data.description, now],
+        )?;
+        Ok((conn.last_insert_rowid(), event_data))
+    }).await;
+    match id {
+        Ok((id, body)) => {
+            let event = Event {
+                id,
+                name: body.name.clone(),
+                event_type: body.event_type.clone(),
+                lat: body.lat,
+                lon: body.lon,
+                radius_km: body.radius_km,
+                description: body.description.clone(),
+                started_at: now,
+                ended_at: None,
+                active: true,
+            };
 
-    let event = Event {
-        id,
-        name: body.name.clone(),
-        event_type: body.event_type.clone(),
-        lat: body.lat,
-        lon: body.lon,
-        radius_km: body.radius_km,
-        description: body.description.clone(),
-        started_at: now,
-        ended_at: None,
-        active: true,
-    };
+            // Auto-generate alerts for watchlist items within the event radius
+            generate_alerts_for_event(&state, &event);
 
-    // Auto-generate alerts for watchlist items within the event radius
-    generate_alerts_for_event(&state, &event);
-
-    (StatusCode::CREATED, Json(event))
+            (StatusCode::CREATED, Json(event))
+        }
+        Err(_) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(Event {
+                id: 0, name: String::new(), event_type: String::new(),
+                lat: 0.0, lon: 0.0, radius_km: 0.0, description: String::new(),
+                started_at: now, ended_at: None, active: false,
+            }))
+        }
+    }
 }
 
 /// Close/deactivate an event.
@@ -113,14 +127,13 @@ pub async fn close_event(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> StatusCode {
-    let conn = state.cache_db.conn();
     let now = chrono::Utc::now().timestamp();
-    let changed = conn
-        .execute(
+    let changed = state.cache_db.run(move |conn| {
+        Ok(conn.execute(
             "UPDATE events SET active = 0, ended_at = ?1 WHERE id = ?2",
             rusqlite::params![now, id],
-        )
-        .unwrap_or(0);
+        ).unwrap_or(0))
+    }).await.unwrap_or(0);
     if changed > 0 { StatusCode::NO_CONTENT } else { StatusCode::NOT_FOUND }
 }
 
@@ -129,9 +142,10 @@ pub async fn delete_event(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> StatusCode {
-    let conn = state.cache_db.conn();
-    conn.execute("DELETE FROM alerts WHERE event_id = ?1", rusqlite::params![id]).ok();
-    let changed = conn.execute("DELETE FROM events WHERE id = ?1", rusqlite::params![id]).unwrap_or(0);
+    let changed = state.cache_db.run(move |conn| {
+        conn.execute("DELETE FROM alerts WHERE event_id = ?1", rusqlite::params![id]).ok();
+        Ok(conn.execute("DELETE FROM events WHERE id = ?1", rusqlite::params![id]).unwrap_or(0))
+    }).await.unwrap_or(0);
     if changed > 0 { StatusCode::NO_CONTENT } else { StatusCode::NOT_FOUND }
 }
 
@@ -160,12 +174,13 @@ pub async fn get_affected(
 ) -> Result<Json<AffectedAssets>, StatusCode> {
     let (lat, lon, radius_km) = if let Some(eid) = q.event_id {
         // Look up event
-        let conn = state.cache_db.conn();
-        let result = conn.query_row(
-            "SELECT lat, lon, radius_km FROM events WHERE id = ?1",
-            rusqlite::params![eid],
-            |row| Ok((row.get::<_, f64>(0)?, row.get::<_, f64>(1)?, row.get::<_, f64>(2)?)),
-        );
+        let result = state.cache_db.run(move |conn| {
+            conn.query_row(
+                "SELECT lat, lon, radius_km FROM events WHERE id = ?1",
+                rusqlite::params![eid],
+                |row| Ok((row.get::<_, f64>(0)?, row.get::<_, f64>(1)?, row.get::<_, f64>(2)?)),
+            ).map_err(|e| e.into())
+        }).await;
         match result {
             Ok(r) => r,
             Err(_) => return Err(StatusCode::NOT_FOUND),
@@ -225,33 +240,31 @@ pub async fn get_affected(
     }
 
     // Check reactors (from static_db)
-    {
-        let conn = state.static_db.conn();
-        let reactor_rows: Vec<_> = {
-            let mut stmt = conn.prepare(
-                "SELECT name, country, lat, lon, capacity_mw, status, reactor_type FROM nuclear_reactors"
-            ).unwrap();
-            stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, f64>(2)?,
-                    row.get::<_, f64>(3)?,
-                    row.get::<_, f64>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                ))
-            }).unwrap().filter_map(|r| r.ok()).collect()
-        };
-        for row in reactor_rows {
-            if haversine_km(lat, lon, row.2, row.3) <= radius_km {
-                reactors.push(serde_json::json!({
-                    "name": row.0, "country": row.1,
-                    "lat": row.2, "lon": row.3,
-                    "capacity_mw": row.4, "status": row.5,
-                    "reactor_type": row.6,
-                }));
-            }
+    let reactor_rows = state.static_db.run(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT name, country, lat, lon, capacity_mw, status, reactor_type FROM nuclear_reactors"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, f64>(3)?,
+                row.get::<_, f64>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })?.filter_map(|r| r.ok()).collect::<Vec<_>>();
+        Ok(rows)
+    }).await.unwrap_or_default();
+    for row in reactor_rows {
+        if haversine_km(lat, lon, row.2, row.3) <= radius_km {
+            reactors.push(serde_json::json!({
+                "name": row.0, "country": row.1,
+                "lat": row.2, "lon": row.3,
+                "capacity_mw": row.4, "status": row.5,
+                "reactor_type": row.6,
+            }));
         }
     }
 
@@ -272,49 +285,61 @@ fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 
 /// Check watchlist items against the event and create alerts.
 fn generate_alerts_for_event(state: &AppState, event: &Event) {
-    let conn = state.cache_db.conn();
-    let mut stmt = match conn.prepare("SELECT id, wtype, name, params FROM watchlist") {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let items: Vec<(i64, String, String, String)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect();
+    let db = state.cache_db.clone();
+    let event_id = event.id;
+    let event_lat = event.lat;
+    let event_lon = event.lon;
+    let event_radius_km = event.radius_km;
+    let event_name = event.name.clone();
+    let event_type = event.event_type.clone();
+    let ship_store = state.ship_store.clone();
 
-    for (_id, wtype, name, params_str) in items {
-        let params: serde_json::Value = serde_json::from_str(&params_str).unwrap_or_default();
-        let within = match wtype.as_str() {
-            "vessel" => {
-                // Check if vessel MMSI is currently in the event radius
-                if let Some(mmsi) = params.get("mmsi").and_then(|v| v.as_u64()) {
-                    state.ship_store.get(&mmsi).map_or(false, |s| {
-                        haversine_km(event.lat, event.lon, s.lat, s.lon) <= event.radius_km
-                    })
-                } else {
-                    false
+    tokio::spawn(async move {
+        let result = db.run(move |conn| {
+            let mut stmt = conn.prepare("SELECT id, wtype, name, params FROM watchlist")?;
+            let items: Vec<(i64, String, String, String)> = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect();
+
+            for (_id, wtype, name, params_str) in items {
+                let params: serde_json::Value = serde_json::from_str(&params_str).unwrap_or_default();
+                let within = match wtype.as_str() {
+                    "vessel" => {
+                        if let Some(mmsi) = params.get("mmsi").and_then(|v| v.as_u64()) {
+                            ship_store.get(&mmsi).map_or(false, |s| {
+                                haversine_km(event_lat, event_lon, s.lat, s.lon) <= event_radius_km
+                            })
+                        } else {
+                            false
+                        }
+                    }
+                    "port" | "reactor" | "area" => {
+                        let plat = params.get("lat").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let plon = params.get("lon").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        haversine_km(event_lat, event_lon, plat, plon) <= event_radius_km
+                    }
+                    _ => false,
+                };
+
+                if within {
+                    let title = format!("{} affected by {}", name, event_name);
+                    let message = format!(
+                        "{} '{}' is within {:.0}km of event '{}' ({})",
+                        wtype, name, event_radius_km, event_name, event_type
+                    );
+                    let now = chrono::Utc::now().timestamp();
+                    conn.execute(
+                        "INSERT INTO alerts (event_id, title, message, severity, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![event_id, title, message, "warning", now],
+                    ).ok();
                 }
             }
-            "port" | "reactor" | "area" => {
-                let plat = params.get("lat").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                let plon = params.get("lon").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                haversine_km(event.lat, event.lon, plat, plon) <= event.radius_km
-            }
-            _ => false,
-        };
-
-        if within {
-            let title = format!("{} affected by {}", name, event.name);
-            let message = format!(
-                "{} '{}' is within {:.0}km of event '{}' ({})",
-                wtype, name, event.radius_km, event.name, event.event_type
-            );
-            let now = chrono::Utc::now().timestamp();
-            conn.execute(
-                "INSERT INTO alerts (event_id, title, message, severity, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![event.id, title, message, "warning", now],
-            ).ok();
+            Ok(())
+        }).await;
+        if let Err(e) = result {
+            eprintln!("generate_alerts_for_event error: {e}");
         }
-    }
+    });
 }

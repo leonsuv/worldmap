@@ -8,8 +8,12 @@ pub async fn cached_fetch(
     url: &str,
     ttl_secs: i64,
 ) -> Result<String> {
-    if let Some(cached) = state.cache_db.cache_get(cache_key)? {
-        return Ok(cached);
+    // Check cache on blocking thread to avoid holding std::sync::Mutex on async runtime
+    let db = state.cache_db.clone();
+    let key = cache_key.to_string();
+    let cached = tokio::task::spawn_blocking(move || db.cache_get(&key)).await??;
+    if let Some(body) = cached {
+        return Ok(body);
     }
 
     let resp = state
@@ -21,6 +25,9 @@ pub async fn cached_fetch(
         .text()
         .await?;
 
-    state.cache_db.cache_set(cache_key, &resp, ttl_secs)?;
+    let db = state.cache_db.clone();
+    let key = cache_key.to_string();
+    let body = resp.clone();
+    tokio::task::spawn_blocking(move || db.cache_set(&key, &body, ttl_secs)).await??;
     Ok(resp)
 }

@@ -72,10 +72,24 @@ async fn opensky_cached_get(
     url: &str,
     cache_ttl: i64,
 ) -> ApiResult {
-    // 1. Fresh cache
-    if let Some(cached) = state.cache_db.cache_get(cache_key)
-        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?
-    {
+    // 1. Fresh cache (run on blocking thread to avoid holding std::sync::Mutex on async runtime)
+    let key = cache_key.to_string();
+    let cached = state.cache_db.run(move |conn| {
+        let now = chrono::Utc::now().timestamp();
+        let mut stmt = conn.prepare_cached(
+            "SELECT body FROM api_cache WHERE key = ?1 AND (fetched_at + ttl_secs) > ?2",
+        )?;
+        let result = stmt.query_row(rusqlite::params![key, now], |row| {
+            let blob: Vec<u8> = row.get(0)?;
+            Ok(String::from_utf8_lossy(&blob).into_owned())
+        });
+        match result {
+            Ok(body) => Ok(Some(body)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }).await.map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(cached) = cached {
         let v: serde_json::Value = serde_json::from_str(&cached)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         return Ok(Json(v));
@@ -84,7 +98,7 @@ async fn opensky_cached_get(
     // 2. Cooldown active?
     let now = chrono::Utc::now().timestamp();
     if now < COOLDOWN_UNTIL.load(Ordering::Relaxed) {
-        return serve_stale_or_empty(state, cache_key);
+        return serve_stale_or_empty(state, cache_key).await;
     }
 
     // 3. Fetch
@@ -127,7 +141,7 @@ async fn opensky_cached_get(
     };
 
     match raw {
-        None => serve_stale_or_empty(state, cache_key),
+        None => serve_stale_or_empty(state, cache_key).await,
         Some(body) if body.is_empty() => {
             // Empty = 404 / no data → return empty JSON array
             Ok(Json(serde_json::json!([])))
@@ -137,17 +151,37 @@ async fn opensky_cached_get(
             BACKOFF_SECS.store(60, Ordering::Relaxed);
             let v: serde_json::Value = serde_json::from_str(&body)
                 .unwrap_or(serde_json::json!([]));
-            let _ = state.cache_db.cache_set(cache_key, &v.to_string(), cache_ttl);
+            let db = state.cache_db.clone();
+            let key = cache_key.to_string();
+            let s = v.to_string();
+            let _ = tokio::task::spawn_blocking(move || db.cache_set(&key, &s, cache_ttl)).await;
             Ok(Json(v))
         }
     }
 }
 
-fn serve_stale_or_empty(
+async fn serve_stale_or_empty(
     state: &Arc<AppState>,
     cache_key: &str,
 ) -> ApiResult {
-    if let Ok(Some(stale)) = state.cache_db.cache_get_stale(cache_key) {
+    let db = state.cache_db.clone();
+    let key = cache_key.to_string();
+    let stale: Option<String> = match db.run(move |conn| {
+        let mut stmt = conn.prepare_cached("SELECT body FROM api_cache WHERE key = ?1")?;
+        let result = stmt.query_row(rusqlite::params![key], |row| {
+            let blob: Vec<u8> = row.get(0)?;
+            Ok(String::from_utf8_lossy(&blob).into_owned())
+        });
+        match result {
+            Ok(body) => Ok(Some(body)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }).await {
+        Ok(opt) => opt,
+        Err(_) => None,
+    };
+    if let Some(stale) = stale {
         let v: serde_json::Value = serde_json::from_str(&stale)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         return Ok(Json(v));
@@ -163,10 +197,24 @@ pub async fn get_flights(
     const CACHE_KEY: &str = "opensky:states";
     const CACHE_TTL: i64 = 15;
 
-    // Check fresh cache
-    if let Some(cached) = state.cache_db.cache_get(CACHE_KEY)
-        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?
-    {
+    // Check fresh cache (on blocking thread)
+    let db = state.cache_db.clone();
+    let cached = db.run(move |conn| {
+        let now = chrono::Utc::now().timestamp();
+        let mut stmt = conn.prepare_cached(
+            "SELECT body FROM api_cache WHERE key = ?1 AND (fetched_at + ttl_secs) > ?2",
+        )?;
+        let result = stmt.query_row(rusqlite::params![CACHE_KEY, now], |row| {
+            let blob: Vec<u8> = row.get(0)?;
+            Ok(String::from_utf8_lossy(&blob).into_owned())
+        });
+        match result {
+            Ok(body) => Ok(Some(body)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }).await.map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(cached) = cached {
         let v: serde_json::Value = serde_json::from_str(&cached)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
         return Ok(Json(v));
@@ -174,7 +222,7 @@ pub async fn get_flights(
 
     let now = chrono::Utc::now().timestamp();
     if now < COOLDOWN_UNTIL.load(Ordering::Relaxed) {
-        return serve_stale_or_empty(&state, CACHE_KEY);
+        return serve_stale_or_empty(&state, CACHE_KEY).await;
     }
 
     let url = format!("{BASE_URL}/states/all");
@@ -209,7 +257,7 @@ pub async fn get_flights(
     };
 
     if raw.is_none() {
-        return serve_stale_or_empty(&state, CACHE_KEY);
+        return serve_stale_or_empty(&state, CACHE_KEY).await;
     }
 
     COOLDOWN_UNTIL.store(0, Ordering::Relaxed);
@@ -255,7 +303,9 @@ pub async fn get_flights(
         "features": features,
     });
 
-    let _ = state.cache_db.cache_set(CACHE_KEY, &collection.to_string(), CACHE_TTL);
+    let db = state.cache_db.clone();
+    let body = collection.to_string();
+    let _ = tokio::task::spawn_blocking(move || db.cache_set(CACHE_KEY, &body, CACHE_TTL)).await;
     Ok(Json(collection))
 }
 

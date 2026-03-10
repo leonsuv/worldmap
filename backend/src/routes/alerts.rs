@@ -30,29 +30,30 @@ pub async fn list_alerts(
     State(state): State<Arc<AppState>>,
     Query(q): Query<AlertsQuery>,
 ) -> Json<Vec<Alert>> {
-    let conn = state.cache_db.conn();
-    let limit = q.limit.unwrap_or(100).min(500);
-    let sql = if q.unread_only.unwrap_or(false) {
-        format!("SELECT id, event_id, title, message, severity, acknowledged, created_at FROM alerts WHERE acknowledged = 0 ORDER BY created_at DESC LIMIT {limit}")
-    } else {
-        format!("SELECT id, event_id, title, message, severity, acknowledged, created_at FROM alerts ORDER BY created_at DESC LIMIT {limit}")
-    };
-    let mut stmt = conn.prepare(&sql).unwrap();
-    let items = stmt
-        .query_map([], |row| {
-            Ok(Alert {
-                id: row.get(0)?,
-                event_id: row.get(1)?,
-                title: row.get(2)?,
-                message: row.get(3)?,
-                severity: row.get(4)?,
-                acknowledged: row.get::<_, i64>(5)? != 0,
-                created_at: row.get(6)?,
-            })
-        })
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect();
+    let items = state.cache_db.run(move |conn| {
+        let limit = q.limit.unwrap_or(100).min(500);
+        let sql = if q.unread_only.unwrap_or(false) {
+            format!("SELECT id, event_id, title, message, severity, acknowledged, created_at FROM alerts WHERE acknowledged = 0 ORDER BY created_at DESC LIMIT {limit}")
+        } else {
+            format!("SELECT id, event_id, title, message, severity, acknowledged, created_at FROM alerts ORDER BY created_at DESC LIMIT {limit}")
+        };
+        let mut stmt = conn.prepare(&sql)?;
+        let items = stmt
+            .query_map([], |row| {
+                Ok(Alert {
+                    id: row.get(0)?,
+                    event_id: row.get(1)?,
+                    title: row.get(2)?,
+                    message: row.get(3)?,
+                    severity: row.get(4)?,
+                    acknowledged: row.get::<_, i64>(5)? != 0,
+                    created_at: row.get(6)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(items)
+    }).await.unwrap_or_default();
     Json(items)
 }
 
@@ -65,10 +66,9 @@ pub struct AlertCount {
 pub async fn alert_count(
     State(state): State<Arc<AppState>>,
 ) -> Json<AlertCount> {
-    let conn = state.cache_db.conn();
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM alerts WHERE acknowledged = 0", [], |row| row.get(0))
-        .unwrap_or(0);
+    let count = state.cache_db.run(|conn| {
+        Ok(conn.query_row("SELECT COUNT(*) FROM alerts WHERE acknowledged = 0", [], |row| row.get(0)).unwrap_or(0i64))
+    }).await.unwrap_or(0);
     Json(AlertCount { count })
 }
 
@@ -77,10 +77,9 @@ pub async fn acknowledge_alert(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> StatusCode {
-    let conn = state.cache_db.conn();
-    let changed = conn
-        .execute("UPDATE alerts SET acknowledged = 1 WHERE id = ?1", rusqlite::params![id])
-        .unwrap_or(0);
+    let changed = state.cache_db.run(move |conn| {
+        Ok(conn.execute("UPDATE alerts SET acknowledged = 1 WHERE id = ?1", rusqlite::params![id]).unwrap_or(0))
+    }).await.unwrap_or(0);
     if changed > 0 { StatusCode::NO_CONTENT } else { StatusCode::NOT_FOUND }
 }
 
@@ -88,7 +87,9 @@ pub async fn acknowledge_alert(
 pub async fn acknowledge_all(
     State(state): State<Arc<AppState>>,
 ) -> StatusCode {
-    let conn = state.cache_db.conn();
-    conn.execute("UPDATE alerts SET acknowledged = 1 WHERE acknowledged = 0", []).ok();
+    let _ = state.cache_db.run(|conn| {
+        conn.execute("UPDATE alerts SET acknowledged = 1 WHERE acknowledged = 0", [])?;
+        Ok(())
+    }).await;
     StatusCode::NO_CONTENT
 }

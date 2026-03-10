@@ -91,13 +91,17 @@ async fn main() -> anyhow::Result<()> {
                      s.ship_name.clone(), s.ship_type, s.timestamp)
                 }).collect();
                 if !batch.is_empty() {
-                    let refs: Vec<_> = batch.iter().map(|s| {
-                        (s.0, s.1, s.2, s.3, s.4, s.5, s.6.as_str(), s.7, s.8)
-                    }).collect();
-                    if let Err(e) = db.save_ships(&refs) {
-                        tracing::warn!("Failed to persist ships: {e}");
-                    } else {
-                        tracing::debug!("Persisted {} ships to cache", refs.len());
+                    let db2 = db.clone();
+                    let res = tokio::task::spawn_blocking(move || {
+                        let refs: Vec<_> = batch.iter().map(|s| {
+                            (s.0, s.1, s.2, s.3, s.4, s.5, s.6.as_str(), s.7, s.8)
+                        }).collect();
+                        db2.save_ships(&refs)
+                    }).await;
+                    match res {
+                        Ok(Ok(())) => tracing::debug!("Persisted ships to cache"),
+                        Ok(Err(e)) => tracing::warn!("Failed to persist ships: {e}"),
+                        Err(e) => tracing::warn!("Ship persist task panicked: {e}"),
                     }
                 }
             }
@@ -119,19 +123,24 @@ async fn main() -> anyhow::Result<()> {
                      s.ship_name.clone(), s.ship_type, now)
                 }).collect();
                 if !batch.is_empty() {
-                    let refs: Vec<_> = batch.iter().map(|s| {
-                        (s.0, s.1, s.2, s.3, s.4, s.5, s.6.as_str(), s.7, s.8)
-                    }).collect();
-                    if let Err(e) = db.save_ship_history(&refs) {
-                        tracing::warn!("Failed to save ship history: {e}");
-                    } else {
-                        tracing::debug!("Saved {} ship history entries", refs.len());
+                    let db2 = db.clone();
+                    let res = tokio::task::spawn_blocking(move || {
+                        let refs: Vec<_> = batch.iter().map(|s| {
+                            (s.0, s.1, s.2, s.3, s.4, s.5, s.6.as_str(), s.7, s.8)
+                        }).collect();
+                        db2.save_ship_history(&refs)
+                    }).await;
+                    match res {
+                        Ok(Ok(())) => tracing::debug!("Saved ship history entries"),
+                        Ok(Err(e)) => tracing::warn!("Failed to save ship history: {e}"),
+                        Err(e) => tracing::warn!("Ship history task panicked: {e}"),
                     }
                 }
                 // Prune entries older than 3 days
-                if let Err(e) = db.prune_ship_history(259_200) {
-                    tracing::warn!("Failed to prune ship history: {e}");
-                }
+                let db2 = db.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    db2.prune_ship_history(259_200)
+                }).await;
             }
         });
     }

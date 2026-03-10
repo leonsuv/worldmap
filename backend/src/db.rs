@@ -9,6 +9,22 @@ pub struct DbPool {
 }
 
 impl DbPool {
+    /// Run a blocking DB operation on a dedicated thread so it never blocks the
+    /// tokio async runtime. Use this for all DB access from async contexts.
+    pub async fn run<F, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let guard = conn.lock().unwrap();
+            f(&guard)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking join error: {e}"))?
+    }
+
     pub fn open_cache(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(path.as_ref())
             .with_context(|| format!("opening cache db at {:?}", path.as_ref()))?;
@@ -181,26 +197,34 @@ impl DbPool {
     /// Persist a batch of ship positions (upsert).
     pub fn save_ships(&self, ships: &[(u64, f64, f64, Option<f64>, Option<f64>, Option<f64>, &str, Option<u32>, i64)]) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare_cached(
-            "INSERT OR REPLACE INTO ships (mmsi, lat, lon, course, speed, heading, ship_name, ship_type, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
-        )?;
-        for s in ships {
-            stmt.execute(rusqlite::params![s.0 as i64, s.1, s.2, s.3, s.4, s.5, s.6, s.7, s.8])?;
+        conn.execute_batch("BEGIN")?;
+        {
+            let mut stmt = conn.prepare_cached(
+                "INSERT OR REPLACE INTO ships (mmsi, lat, lon, course, speed, heading, ship_name, ship_type, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
+            )?;
+            for s in ships {
+                stmt.execute(rusqlite::params![s.0 as i64, s.1, s.2, s.3, s.4, s.5, s.6, s.7, s.8])?;
+            }
         }
+        conn.execute_batch("COMMIT")?;
         Ok(())
     }
 
     /// Append a batch of ship positions into the history table.
     pub fn save_ship_history(&self, ships: &[(u64, f64, f64, Option<f64>, Option<f64>, Option<f64>, &str, Option<u32>, i64)]) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare_cached(
-            "INSERT INTO ship_history (mmsi, lat, lon, course, speed, heading, ship_name, ship_type, recorded_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
-        )?;
-        for s in ships {
-            stmt.execute(rusqlite::params![s.0 as i64, s.1, s.2, s.3, s.4, s.5, s.6, s.7, s.8])?;
+        conn.execute_batch("BEGIN")?;
+        {
+            let mut stmt = conn.prepare_cached(
+                "INSERT INTO ship_history (mmsi, lat, lon, course, speed, heading, ship_name, ship_type, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
+            )?;
+            for s in ships {
+                stmt.execute(rusqlite::params![s.0 as i64, s.1, s.2, s.3, s.4, s.5, s.6, s.7, s.8])?;
+            }
         }
+        conn.execute_batch("COMMIT")?;
         Ok(())
     }
 

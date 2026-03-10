@@ -42,77 +42,83 @@ pub async fn export_csv(
             ("ships.csv", out)
         }
         "events" => {
-            let conn = state.cache_db.conn();
-            let mut stmt = conn.prepare(
-                "SELECT id, name, event_type, lat, lon, radius_km, description, started_at, ended_at, active FROM events ORDER BY started_at DESC"
-            ).unwrap();
-            let mut out = String::from("id,name,event_type,lat,lon,radius_km,description,started_at,ended_at,active\n");
-            let mut rows = stmt.query([]).unwrap();
-            while let Some(row) = rows.next().unwrap() {
-                let id: i64 = row.get(0).unwrap();
-                let name: String = row.get(1).unwrap();
-                let etype: String = row.get(2).unwrap();
-                let lat: f64 = row.get(3).unwrap();
-                let lon: f64 = row.get(4).unwrap();
-                let radius: f64 = row.get(5).unwrap();
-                let desc: String = row.get(6).unwrap_or_default();
-                let started: i64 = row.get(7).unwrap();
-                let ended: Option<i64> = row.get(8).unwrap();
-                let active: bool = row.get::<_, i64>(9).unwrap() != 0;
-                out.push_str(&format!(
-                    "{},{},{},{},{},{},{},{},{},{}\n",
-                    id, csv_escape(&name), etype, lat, lon, radius,
-                    csv_escape(&desc), started,
-                    ended.map(|v| v.to_string()).unwrap_or_default(),
-                    active,
-                ));
-            }
-            ("events.csv", out)
+            let csv_body = state.cache_db.run(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, name, event_type, lat, lon, radius_km, description, started_at, ended_at, active FROM events ORDER BY started_at DESC"
+                )?;
+                let mut out = String::from("id,name,event_type,lat,lon,radius_km,description,started_at,ended_at,active\n");
+                let mut rows = stmt.query([])?;
+                while let Some(row) = rows.next()? {
+                    let id: i64 = row.get(0)?;
+                    let name: String = row.get(1)?;
+                    let etype: String = row.get(2)?;
+                    let lat: f64 = row.get(3)?;
+                    let lon: f64 = row.get(4)?;
+                    let radius: f64 = row.get(5)?;
+                    let desc: String = row.get(6).unwrap_or_default();
+                    let started: i64 = row.get(7)?;
+                    let ended: Option<i64> = row.get(8)?;
+                    let active: bool = row.get::<_, i64>(9)? != 0;
+                    out.push_str(&format!(
+                        "{},{},{},{},{},{},{},{},{},{}\n",
+                        id, csv_escape(&name), etype, lat, lon, radius,
+                        csv_escape(&desc), started,
+                        ended.map(|v| v.to_string()).unwrap_or_default(),
+                        active,
+                    ));
+                }
+                Ok(out)
+            }).await.unwrap_or_default();
+            ("events.csv", csv_body)
         }
         "alerts" => {
-            let conn = state.cache_db.conn();
-            let mut stmt = conn.prepare(
-                "SELECT id, event_id, title, message, severity, acknowledged, created_at FROM alerts ORDER BY created_at DESC"
-            ).unwrap();
-            let mut out = String::from("id,event_id,title,message,severity,acknowledged,created_at\n");
-            let mut rows = stmt.query([]).unwrap();
-            while let Some(row) = rows.next().unwrap() {
-                let id: i64 = row.get(0).unwrap();
-                let event_id: Option<i64> = row.get(1).unwrap();
-                let title: String = row.get(2).unwrap();
-                let message: String = row.get(3).unwrap();
-                let severity: String = row.get(4).unwrap();
-                let ack: bool = row.get::<_, i64>(5).unwrap() != 0;
-                let created: i64 = row.get(6).unwrap();
-                out.push_str(&format!(
-                    "{},{},{},{},{},{},{}\n",
-                    id,
-                    event_id.map(|v| v.to_string()).unwrap_or_default(),
-                    csv_escape(&title), csv_escape(&message),
-                    severity, ack, created,
-                ));
-            }
-            ("alerts.csv", out)
+            let csv_body = state.cache_db.run(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, event_id, title, message, severity, acknowledged, created_at FROM alerts ORDER BY created_at DESC"
+                )?;
+                let mut out = String::from("id,event_id,title,message,severity,acknowledged,created_at\n");
+                let mut rows = stmt.query([])?;
+                while let Some(row) = rows.next()? {
+                    let id: i64 = row.get(0)?;
+                    let event_id: Option<i64> = row.get(1)?;
+                    let title: String = row.get(2)?;
+                    let message: String = row.get(3)?;
+                    let severity: String = row.get(4)?;
+                    let ack: bool = row.get::<_, i64>(5)? != 0;
+                    let created: i64 = row.get(6)?;
+                    out.push_str(&format!(
+                        "{},{},{},{},{},{},{}\n",
+                        id,
+                        event_id.map(|v| v.to_string()).unwrap_or_default(),
+                        csv_escape(&title), csv_escape(&message),
+                        severity, ack, created,
+                    ));
+                }
+                Ok(out)
+            }).await.unwrap_or_default();
+            ("alerts.csv", csv_body)
         }
         "watchlist" => {
-            let conn = state.cache_db.conn();
-            let mut stmt = conn.prepare(
-                "SELECT id, wtype, name, params, created_at FROM watchlist ORDER BY created_at DESC"
-            ).unwrap();
-            let mut out = String::from("id,type,name,params,created_at\n");
-            let mut rows = stmt.query([]).unwrap();
-            while let Some(row) = rows.next().unwrap() {
-                let id: i64 = row.get(0).unwrap();
-                let wtype: String = row.get(1).unwrap();
-                let name: String = row.get(2).unwrap();
-                let params: String = row.get(3).unwrap_or_default();
-                let created: i64 = row.get(4).unwrap();
-                out.push_str(&format!(
-                    "{},{},{},{},{}\n",
-                    id, wtype, csv_escape(&name), csv_escape(&params), created,
-                ));
-            }
-            ("watchlist.csv", out)
+            let csv_body = state.cache_db.run(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, wtype, name, params, created_at FROM watchlist ORDER BY created_at DESC"
+                )?;
+                let mut out = String::from("id,type,name,params,created_at\n");
+                let mut rows = stmt.query([])?;
+                while let Some(row) = rows.next()? {
+                    let id: i64 = row.get(0)?;
+                    let wtype: String = row.get(1)?;
+                    let name: String = row.get(2)?;
+                    let params: String = row.get(3).unwrap_or_default();
+                    let created: i64 = row.get(4)?;
+                    out.push_str(&format!(
+                        "{},{},{},{},{}\n",
+                        id, wtype, csv_escape(&name), csv_escape(&params), created,
+                    ));
+                }
+                Ok(out)
+            }).await.unwrap_or_default();
+            ("watchlist.csv", csv_body)
         }
         _ => return (StatusCode::BAD_REQUEST, "Unknown export type").into_response(),
     };
@@ -154,58 +160,72 @@ pub struct EventSummary {
 pub async fn situation_report(
     State(state): State<Arc<AppState>>,
 ) -> Json<SituationReport> {
-    let conn = state.cache_db.conn();
     let now = chrono::Utc::now().timestamp();
-
     let total_ships = state.ship_store.len();
 
-    let total_events: i64 = conn
-        .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
-        .unwrap_or(0);
-    let unacknowledged_alerts: i64 = conn
-        .query_row("SELECT COUNT(*) FROM alerts WHERE acknowledged = 0", [], |r| r.get(0))
-        .unwrap_or(0);
-    let watchlist_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM watchlist", [], |r| r.get(0))
-        .unwrap_or(0);
+    let ship_store = state.ship_store.clone();
+    let report_data = state.cache_db.run(move |conn| {
+        let total_events: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap_or(0);
+        let unacknowledged_alerts: i64 = conn
+            .query_row("SELECT COUNT(*) FROM alerts WHERE acknowledged = 0", [], |r| r.get(0))
+            .unwrap_or(0);
+        let watchlist_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM watchlist", [], |r| r.get(0))
+            .unwrap_or(0);
 
-    // Active events with rough affected count
-    let mut stmt = conn.prepare(
-        "SELECT id, name, event_type, lat, lon, radius_km, description, started_at FROM events WHERE active = 1"
-    ).unwrap();
-    let active_events: Vec<EventSummary> = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, f64>(3)?,
-                row.get::<_, f64>(4)?,
-                row.get::<_, f64>(5)?,
-                row.get::<_, String>(6)?,
-                row.get::<_, i64>(7)?,
-            ))
-        })
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .map(|(id, name, event_type, lat, lon, radius_km, description, started_at)| {
-            // Count ships in radius
-            let affected_count = state.ship_store.iter().filter(|entry| {
-                let s = entry.value();
-                haversine_km(lat, lon, s.lat, s.lon) <= radius_km
-            }).count();
-            EventSummary { id, name, event_type, lat, lon, radius_km, description, started_at, affected_count }
-        })
-        .collect();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, event_type, lat, lon, radius_km, description, started_at FROM events WHERE active = 1"
+        )?;
+        let active_events: Vec<EventSummary> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, f64>(3)?,
+                    row.get::<_, f64>(4)?,
+                    row.get::<_, f64>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .map(|(id, name, event_type, lat, lon, radius_km, description, started_at)| {
+                let affected_count = ship_store.iter().filter(|entry| {
+                    let s = entry.value();
+                    haversine_km(lat, lon, s.lat, s.lon) <= radius_km
+                }).count();
+                EventSummary { id, name, event_type, lat, lon, radius_km, description, started_at, affected_count }
+            })
+            .collect();
 
-    Json(SituationReport {
-        generated_at: now,
-        total_ships,
-        total_events,
-        active_events,
-        unacknowledged_alerts,
-        watchlist_count,
-    })
+        Ok((total_events, unacknowledged_alerts, watchlist_count, active_events))
+    }).await;
+
+    match report_data {
+        Ok((total_events, unacknowledged_alerts, watchlist_count, active_events)) => {
+            Json(SituationReport {
+                generated_at: now,
+                total_ships,
+                total_events,
+                active_events,
+                unacknowledged_alerts,
+                watchlist_count,
+            })
+        }
+        Err(_) => {
+            Json(SituationReport {
+                generated_at: now,
+                total_ships,
+                total_events: 0,
+                active_events: vec![],
+                unacknowledged_alerts: 0,
+                watchlist_count: 0,
+            })
+        }
+    }
 }
 
 fn csv_escape(s: &str) -> String {
