@@ -225,5 +225,5 @@ Contributions are welcome! Please open an issue or submit a pull request.
 
 ## License
 
-[MIT](LICENSE) — Copyright 2026 Leo Bak
+[MIT](LICENSE) — Copyright 2026 leonsuv
 ```

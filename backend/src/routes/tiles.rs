@@ -73,41 +73,39 @@ pub async fn tilejson(
         .tile_index
         .sources
         .get(&source)
-        .ok_or(StatusCode::NOT_FOUND)?;
-    let conn = conn.lock().unwrap();
+        .ok_or(StatusCode::NOT_FOUND)?
+        .clone();
 
-    let mut minzoom = None;
-    let mut maxzoom = None;
-    let mut format = None;
+    let src = source.clone();
+    let (minzoom, maxzoom, format) = tokio::task::spawn_blocking(move || {
+        let conn = conn.lock().unwrap();
+        let mut minzoom = None;
+        let mut maxzoom = None;
+        let mut format = None;
 
-    let mut stmt = conn
-        .prepare("SELECT name, value FROM metadata")
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-            ))
-        })
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    for row in rows {
-        if let Ok((name, value)) = row {
-            match name.as_str() {
-                "minzoom" => minzoom = value.parse().ok(),
-                "maxzoom" => maxzoom = value.parse().ok(),
-                "format" => format = Some(value),
-                _ => {}
+        if let Ok(mut stmt) = conn.prepare("SELECT name, value FROM metadata") {
+            if let Ok(rows) = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            }) {
+                for row in rows.flatten() {
+                    match row.0.as_str() {
+                        "minzoom" => minzoom = row.1.parse().ok(),
+                        "maxzoom" => maxzoom = row.1.parse().ok(),
+                        "format" => format = Some(row.1),
+                        _ => {}
+                    }
+                }
             }
         }
-    }
+        (minzoom, maxzoom, format)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(TileJson {
         tilejson: "3.0.0",
-        name: source.clone(),
-        tiles: vec![format!("/tiles/{source}/{{z}}/{{x}}/{{y}}")],
+        name: src.clone(),
+        tiles: vec![format!("/tiles/{src}/{{z}}/{{x}}/{{y}}")],
         minzoom,
         maxzoom,
         format,
@@ -119,19 +117,23 @@ pub async fn get_tile(
     Path((source, z, x, y)): Path<(String, u32, u32, u32)>,
 ) -> impl IntoResponse {
     let conn = match state.tile_index.sources.get(&source) {
-        Some(c) => c,
+        Some(c) => c.clone(),
         None => return StatusCode::NOT_FOUND.into_response(),
     };
-    let conn = conn.lock().unwrap();
 
     // MBTiles uses TMS Y flipping
     let tms_y = (1u32 << z) - 1 - y;
 
-    let result: Result<Vec<u8>, _> = conn.query_row(
-        "SELECT tile_data FROM tiles WHERE zoom_level=?1 AND tile_column=?2 AND tile_row=?3",
-        rusqlite::params![z, x, tms_y],
-        |row| row.get(0),
-    );
+    let result: Result<Vec<u8>, _> = tokio::task::spawn_blocking(move || {
+        let conn = conn.lock().unwrap();
+        conn.query_row(
+            "SELECT tile_data FROM tiles WHERE zoom_level=?1 AND tile_column=?2 AND tile_row=?3",
+            rusqlite::params![z, x, tms_y],
+            |row| row.get(0),
+        )
+    })
+    .await
+    .unwrap_or(Err(rusqlite::Error::QueryReturnedNoRows));
 
     match result {
         Ok(tile_data) => {
