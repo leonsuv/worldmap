@@ -7,6 +7,12 @@ import ShipDetailPanel from './ui/ShipDetailPanel'
 import MapControls from './ui/MapControls'
 import Attribution from './ui/Attribution'
 import Search from './ui/Search'
+import WatchlistPanel from './ui/WatchlistPanel'
+import EventPanel from './ui/EventPanel'
+import AlertPanel from './ui/AlertPanel'
+import TimeSlider from './ui/TimeSlider'
+import ExportMenu from './ui/ExportMenu'
+import BusinessToolbar from './ui/BusinessToolbar'
 import './App.css'
 
 function App() {
@@ -16,10 +22,16 @@ function App() {
       <MapContainer />
       <Search />
       <LayerPanel />
+      <BusinessToolbar />
       <MapControls />
       <InfoPopup />
       <FlightDetailPanel />
       <ShipDetailPanel />
+      <WatchlistPanel />
+      <EventPanel />
+      <AlertPanel />
+      <TimeSlider />
+      <ExportMenu />
       <Attribution />
     </div>
   )

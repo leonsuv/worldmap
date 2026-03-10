@@ -10,12 +10,24 @@ backend/target/
 
 # Python virtual environment
 .venv/
+__pycache__/
+*.pyc
 
-# Environment files
+# Environment files — NEVER commit real keys
 .env
 .env.local
 .env.*.local
+backend/.env
+frontend/.env
 
 # OS files
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace

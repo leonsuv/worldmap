@@ -104,6 +104,38 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Periodic ship history snapshots (every 5 minutes for historical replay)
+    {
+        let store = ship_store.clone();
+        let db = cache_db.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                let now = chrono::Utc::now().timestamp();
+                let batch: Vec<_> = store.iter().map(|e| {
+                    let s = e.value();
+                    (s.mmsi, s.lat, s.lon,
+                     s.course, s.speed, s.heading,
+                     s.ship_name.clone(), s.ship_type, now)
+                }).collect();
+                if !batch.is_empty() {
+                    let refs: Vec<_> = batch.iter().map(|s| {
+                        (s.0, s.1, s.2, s.3, s.4, s.5, s.6.as_str(), s.7, s.8)
+                    }).collect();
+                    if let Err(e) = db.save_ship_history(&refs) {
+                        tracing::warn!("Failed to save ship history: {e}");
+                    } else {
+                        tracing::debug!("Saved {} ship history entries", refs.len());
+                    }
+                }
+                // Prune entries older than 3 days
+                if let Err(e) = db.prune_ship_history(259_200) {
+                    tracing::warn!("Failed to prune ship history: {e}");
+                }
+            }
+        });
+    }
+
     // Shared HTTP client
     let http_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -171,6 +203,25 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/traffic", get(routes::traffic::get_traffic))
         .route("/api/airports", get(routes::static_data::get_airports))
         .route("/api/seaports", get(routes::static_data::get_seaports))
+        // Watchlist
+        .route("/api/watchlist", get(routes::watchlist::list_watchlist).post(routes::watchlist::create_watchlist_item))
+        .route("/api/watchlist/{id}", axum::routing::delete(routes::watchlist::delete_watchlist_item))
+        // Events
+        .route("/api/events", get(routes::events::list_events).post(routes::events::create_event))
+        .route("/api/events/{id}", axum::routing::delete(routes::events::delete_event))
+        .route("/api/events/{id}/close", axum::routing::post(routes::events::close_event))
+        .route("/api/events/affected", get(routes::events::get_affected))
+        // Alerts
+        .route("/api/alerts", get(routes::alerts::list_alerts))
+        .route("/api/alerts/count", get(routes::alerts::alert_count))
+        .route("/api/alerts/{id}/ack", axum::routing::post(routes::alerts::acknowledge_alert))
+        .route("/api/alerts/ack-all", axum::routing::post(routes::alerts::acknowledge_all))
+        // History
+        .route("/api/history/ships", get(routes::history::get_ship_history))
+        .route("/api/history/timestamps", get(routes::history::get_history_timestamps))
+        // Export
+        .route("/api/export/csv", get(routes::export::export_csv))
+        .route("/api/export/report", get(routes::export::situation_report))
         .with_state(state)
         // Middleware
         .layer(TraceLayer::new_for_http())

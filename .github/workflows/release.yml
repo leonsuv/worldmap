@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: worldmap-linux-amd64
+            binary: worldmap-backend
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: worldmap-macos-arm64
+            binary: worldmap-backend
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: worldmap-windows-amd64
+            binary: worldmap-backend.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Build backend ──
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - name: Build backend
+        working-directory: backend
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # ── Build frontend ──
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npx vite build
+
+      # ── Package release archive ──
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p release/${{ matrix.artifact }}
+          cp backend/target/${{ matrix.target }}/release/${{ matrix.binary }} release/${{ matrix.artifact }}/
+          cp -r frontend/dist release/${{ matrix.artifact }}/frontend-dist
+          cp backend/.env.example release/${{ matrix.artifact }}/
+          cp README.md LICENSE release/${{ matrix.artifact }}/
+          cd release && tar czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release/${{ matrix.artifact }}
+          Copy-Item backend/target/${{ matrix.target }}/release/${{ matrix.binary }} release/${{ matrix.artifact }}/
+          Copy-Item -Recurse frontend/dist release/${{ matrix.artifact }}/frontend-dist
+          Copy-Item backend/.env.example release/${{ matrix.artifact }}/
+          Copy-Item README.md, LICENSE release/${{ matrix.artifact }}/
+          Compress-Archive -Path release/${{ matrix.artifact }} -DestinationPath release/${{ matrix.artifact }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: release/${{ matrix.artifact }}.*
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip

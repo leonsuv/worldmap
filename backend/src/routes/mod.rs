@@ -1,7 +1,12 @@
+pub mod alerts;
+pub mod events;
+pub mod export;
 pub mod flights;
+pub mod history;
 pub mod reactors;
 pub mod ships;
 pub mod static_data;
 pub mod tiles;
 pub mod traffic;
+pub mod watchlist;
 pub mod weather;

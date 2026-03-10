@@ -14,8 +14,12 @@ import { syncPipelinesLayer } from './PipelinesLayer'
 import { syncBuildings3DLayer } from './Buildings3DLayer'
 import { syncPowerGridLayer } from './PowerGridLayer'
 import { buildAtoNLayer } from './AtoNLayer'
+import { buildEventRadiusLayers } from './EventRadiusLayer'
+import { buildHistoryShipsLayer } from './HistoryShipsLayer'
 import { useFlightDetailStore } from '../store/flightDetail'
 import { useShipDetailStore } from '../store/shipDetail'
+import { useEventStore } from '../store/events'
+import { useHistoryStore } from '../store/history'
 import type { ShipDetail } from '../store/shipDetail'
 import type { FlightRecord } from '../store/flightDetail'
 import type { Layer } from '@deck.gl/core'
@@ -36,6 +40,8 @@ const layerData = {
   seaports: null as GeoJSON.FeatureCollection | null,
   aton: null as GeoJSON.FeatureCollection | null,
   flightTrack: null as [number, number, number][] | null,
+  eventRadii: [] as import('../store/events').EventItem[],
+  historyPositions: [] as import('../store/history').HistoryPoint[],
 }
 
 // Snapshot of store booleans + zoom, written from React, read from RAF
@@ -121,6 +127,8 @@ function renderLoop() {
     if (flags.seaports && layerData.seaports) dl.push(buildSeaportsLayer(layerData.seaports))
     if (flags.aton && layerData.aton) dl.push(buildAtoNLayer(layerData.aton))
     if (layerData.flightTrack && layerData.flightTrack.length > 1) dl.push(buildTrackLayer(layerData.flightTrack))
+    if (layerData.eventRadii.length) dl.push(...buildEventRadiusLayers(layerData.eventRadii))
+    if (layerData.historyPositions.length) dl.push(buildHistoryShipsLayer(layerData.historyPositions))
 
     deckOverlay.setProps({
       layers: dl,
@@ -388,4 +396,18 @@ export function useLayers() {
     if (map.isStyleLoaded()) onStyleLoad()
     else map.once('style.load', onStyleLoad)
   }, [layers.pipelines, layers.powerGrid, layers.hvLines, layers.buildings3d, viewport.zoom])
+
+  // ── Event radius circles (sync from event store) ──
+  useEffect(() => {
+    return useEventStore.subscribe(s => {
+      layerData.eventRadii = s.events.filter(e => e.active)
+    })
+  }, [])
+
+  // ── Historical replay (sync positions from history store) ──
+  useEffect(() => {
+    return useHistoryStore.subscribe(s => {
+      layerData.historyPositions = s.enabled ? s.positions : []
+    })
+  }, [])
 }
