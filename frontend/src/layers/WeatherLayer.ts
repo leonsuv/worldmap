@@ -1,4 +1,5 @@
-import { LineLayer } from '@deck.gl/layers'
+import { PathLayer } from '@deck.gl/layers'
+import type { Layer } from '@deck.gl/core'
 
 interface WindPoint {
   lon: number
@@ -7,32 +8,64 @@ interface WindPoint {
   dir: number   // degrees, where wind is coming FROM
 }
 
-export function buildWeatherLayer(data: WindPoint[]): LineLayer {
-  // Convert wind points into line segments: origin → tip in the direction wind blows TO
-  const lines = data.map((p) => {
-    const len = Math.min(p.speed * 0.15, 3) // scale to degrees
-    const rad = ((p.dir + 180) % 360) * (Math.PI / 180) // direction wind blows TO
+function speedColor(speed: number): [number, number, number, number] {
+  if (speed < 4) return [72, 181, 255, 170]
+  if (speed < 8) return [46, 134, 255, 190]
+  if (speed < 12) return [255, 202, 66, 215]
+  if (speed < 17) return [255, 134, 36, 230]
+  return [255, 76, 59, 245]
+}
+
+type WeatherGlyph = {
+  path: [number, number][]
+  speed: number
+}
+
+export function buildWeatherLayer(data: WindPoint[]): Layer[] {
+  const glyphs: WeatherGlyph[] = data.map((p) => {
+    // Direction conversion: meteorological direction (FROM) -> flow direction (TO)
+    const rad = ((p.dir + 180) % 360) * (Math.PI / 180)
+
+    // Keep arrows geographically compact to avoid map clutter.
+    const shaft = Math.max(0.25, Math.min(1.15, 0.24 + p.speed * 0.055))
+    const head = Math.max(0.08, shaft * 0.24)
+    const spread = Math.PI / 6.5
+
+    const sx = p.lon
+    const sy = p.lat
+    const tx = p.lon + shaft * Math.sin(rad)
+    const ty = p.lat + shaft * Math.cos(rad)
+
+    const lwx = tx - head * Math.sin(rad - spread)
+    const lwy = ty - head * Math.cos(rad - spread)
+    const rwx = tx - head * Math.sin(rad + spread)
+    const rwy = ty - head * Math.cos(rad + spread)
+
     return {
-      from: [p.lon, p.lat],
-      to: [p.lon + len * Math.sin(rad), p.lat + len * Math.cos(rad)],
+      // Draw shaft and both arrowhead wings as one polyline.
+      path: [
+        [sx, sy],
+        [tx, ty],
+        [lwx, lwy],
+        [tx, ty],
+        [rwx, rwy],
+      ],
       speed: p.speed,
     }
   })
 
-  return new LineLayer({
-    id: 'weather-wind',
-    data: lines,
-    getSourcePosition: (d) => d.from as [number, number],
-    getTargetPosition: (d) => d.to as [number, number],
-    getColor: (d) => {
-      const s = d.speed as number
-      if (s < 5) return [100, 200, 255, 180]
-      if (s < 10) return [50, 150, 255, 200]
-      if (s < 15) return [255, 200, 50, 220]
-      return [255, 80, 50, 240]
-    },
-    getWidth: (d) => Math.max(1, Math.min((d.speed as number) / 3, 5)),
-    widthUnits: 'pixels',
-    pickable: false,
-  })
+  return [
+    new PathLayer({
+      id: 'weather-wind-arrows',
+      data: glyphs,
+      getPath: (d) => d.path,
+      getColor: (d) => speedColor(d.speed),
+      getWidth: (d) => Math.max(1.2, Math.min(5.2, d.speed * 0.22)),
+      widthUnits: 'pixels',
+      capRounded: true,
+      jointRounded: true,
+      pickable: false,
+      opacity: 0.95,
+    }),
+  ]
 }

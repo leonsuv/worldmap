@@ -24,6 +24,8 @@ import type { ShipDetail } from '../store/shipDetail'
 import type { FlightRecord } from '../store/flightDetail'
 import type { Layer } from '@deck.gl/core'
 
+const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n))
+
 // ── Module-level render loop (decoupled from React) ──
 
 let rafId = 0
@@ -120,7 +122,7 @@ function renderLoop() {
     const dl: Layer[] = []
     if (flags.flights && layerData.flights) dl.push(buildFlightsLayer(layerData.flights))
     if (flags.ships && layerData.shipsArr.length) dl.push(buildShipsLayer(layerData.shipsArr))
-    if (flags.weather && layerData.weather.length) dl.push(buildWeatherLayer(layerData.weather))
+    if (flags.weather && layerData.weather.length) dl.push(...buildWeatherLayer(layerData.weather))
     if (flags.reactors && layerData.reactors) dl.push(buildReactorsLayer(layerData.reactors))
     if (flags.traffic && layerData.traffic.length) dl.push(buildTrafficLayer(layerData.traffic))
     if (flags.airports && layerData.airports) dl.push(buildAirportsLayer(layerData.airports))
@@ -256,48 +258,113 @@ export function useLayers() {
 
   // ── Weather ──
   const weatherAbort = useRef<AbortController | null>(null)
+  const weatherDebounce = useRef<number | null>(null)
 
   useEffect(() => {
     if (!layers.weather) {
       weatherAbort.current?.abort()
+      if (weatherDebounce.current) {
+        clearTimeout(weatherDebounce.current)
+        weatherDebounce.current = null
+      }
       layerData.weather = []
       return
     }
-    const ac = new AbortController()
-    weatherAbort.current = ac
-    const fetchWeather = async () => {
-      const [w, s, e, n] = viewport.bbox
-      const cw = Math.max(-180, w), cs = Math.max(-90, s)
-      const ce = Math.min(180, e), cn = Math.min(90, n)
-      const spanLon = ce - cw
-      const step = Math.max(2, Math.round(spanLon / 8))
+
+    const getWeatherSamplePoints = (
+      bbox: [number, number, number, number],
+      zoom: number,
+    ): { lat: number; lon: number }[] => {
+      const [w, s, e, n] = bbox
+      const cw = Math.max(-180, w)
+      const cs = Math.max(-90, s)
+      const ce = Math.min(180, e)
+      const cn = Math.min(90, n)
+
+      const cols = zoom < 3.2 ? 5 : zoom < 5.5 ? 6 : 7
+      const rows = zoom < 3.2 ? 3 : zoom < 5.5 ? 4 : 5
+
+      const dLon = (ce - cw) / cols
+      const dLat = (cn - cs) / rows
+      if (!Number.isFinite(dLon) || !Number.isFinite(dLat) || dLon <= 0 || dLat <= 0) return []
+
       const points: { lat: number; lon: number }[] = []
-      for (let lat = Math.ceil(cs / step) * step; lat <= cn; lat += step) {
-        for (let lon = Math.ceil(cw / step) * step; lon <= ce; lon += step) {
+      for (let r = 0; r <= rows; r++) {
+        for (let c = 0; c <= cols; c++) {
+          const lon = +(cw + c * dLon).toFixed(2)
+          const lat = +(cs + r * dLat).toFixed(2)
           points.push({ lat, lon })
         }
-        if (points.length >= 40) break
       }
+
+      // Hard upper bound to protect upstream API.
+      const limit = zoom < 4 ? 16 : 24
+      return points.slice(0, limit)
+    }
+
+    const mapWithConcurrency = async <T, R>(
+      items: T[],
+      concurrency: number,
+      fn: (item: T) => Promise<R>,
+    ): Promise<R[]> => {
+      const out: R[] = new Array(items.length)
+      let idx = 0
+      const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+        while (true) {
+          const i = idx
+          idx += 1
+          if (i >= items.length) return
+          out[i] = await fn(items[i])
+        }
+      })
+      await Promise.all(workers)
+      return out
+    }
+
+    const ac = new AbortController()
+    weatherAbort.current = ac
+
+    const fetchWeather = async () => {
+      const points = getWeatherSamplePoints(viewport.bbox, viewport.zoom)
       if (points.length === 0) return
+
       try {
-        const results = await Promise.all(
-          points.map(async (p) => {
-            const r = await fetch(`/api/weather?lat=${p.lat}&lon=${p.lon}`, { signal: ac.signal })
-            if (!r.ok) return null
-            const d = await r.json()
-            const h = d.hourly
-            if (!h) return null
-            return { lon: p.lon, lat: p.lat, speed: h.windspeed_10m?.[0] ?? 0, dir: h.winddirection_10m?.[0] ?? 0 }
-          })
-        )
+        const results = await mapWithConcurrency(points, 4, async (p) => {
+          const r = await fetch(`/api/weather?lat=${p.lat}&lon=${p.lon}`, { signal: ac.signal })
+          if (!r.ok) return null
+          const d = await r.json()
+          const h = d.hourly
+          if (!h) return null
+          return {
+            lon: p.lon,
+            lat: p.lat,
+            speed: Number(h.windspeed_10m?.[0] ?? 0),
+            dir: Number(h.winddirection_10m?.[0] ?? 0),
+          }
+        })
+
         if (!ac.signal.aborted) {
-          layerData.weather = results.filter((r): r is NonNullable<typeof r> => r !== null)
+          layerData.weather = results
+            .filter((r): r is NonNullable<typeof r> => r !== null)
+            .filter((r) => Number.isFinite(r.lon) && Number.isFinite(r.lat))
+            .map((r) => ({
+              ...r,
+              speed: clamp(r.speed, 0, 60),
+              dir: ((r.dir % 360) + 360) % 360,
+            }))
         }
       } catch { /* aborted */ }
     }
-    fetchWeather()
-    return () => ac.abort()
-  }, [layers.weather, viewport.bbox])
+
+    weatherDebounce.current = window.setTimeout(fetchWeather, 450)
+    return () => {
+      if (weatherDebounce.current) {
+        clearTimeout(weatherDebounce.current)
+        weatherDebounce.current = null
+      }
+      ac.abort()
+    }
+  }, [layers.weather, viewport.bbox, viewport.zoom])
 
   // ── Reactors (fetch once) ──
   useEffect(() => {

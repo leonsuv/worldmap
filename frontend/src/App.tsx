@@ -13,6 +13,7 @@ import AlertPanel from './ui/AlertPanel'
 import TimeSlider from './ui/TimeSlider'
 import ExportMenu from './ui/ExportMenu'
 import BusinessToolbar from './ui/BusinessToolbar'
+import WeatherLegend from './ui/WeatherLegend'
 import './App.css'
 
 function App() {
@@ -30,6 +31,7 @@ function App() {
       <WatchlistPanel />
       <EventPanel />
       <AlertPanel />
+      <WeatherLegend />
       <TimeSlider />
       <ExportMenu />
       <Attribution />
