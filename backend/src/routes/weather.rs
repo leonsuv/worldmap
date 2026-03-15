@@ -17,8 +17,16 @@ pub async fn get_weather(
 ) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
     let cache_key = format!("weather:{:.2}:{:.2}", q.lat, q.lon);
     let url = format!(
-        "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&hourly=windspeed_10m,winddirection_10m,wave_height,wave_direction&forecast_days=1&windspeed_unit=ms",
-        q.lat, q.lon
+        concat!(
+            "https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}",
+            "&timezone=auto&windspeed_unit=ms",
+            "&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,rain,showers,snowfall,weather_code,cloud_cover,pressure_msl,surface_pressure,wind_speed_10m,wind_direction_10m,wind_gusts_10m,visibility,is_day,wave_height,wave_direction,wave_period",
+            "&hourly=temperature_2m,apparent_temperature,relative_humidity_2m,dew_point_2m,precipitation_probability,precipitation,rain,showers,snowfall,weather_code,pressure_msl,surface_pressure,cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,visibility,wind_speed_10m,wind_direction_10m,wind_gusts_10m,wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period,wind_wave_height,wind_wave_direction,wind_wave_period",
+            "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,rain_sum,showers_sum,snowfall_sum,precipitation_probability_max,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,sunrise,sunset,uv_index_max",
+            "&forecast_hours=24&forecast_days=3"
+        ),
+        lat = q.lat,
+        lon = q.lon,
     );
 
     let raw = match cached_fetch(&state, &cache_key, &url, 900).await {

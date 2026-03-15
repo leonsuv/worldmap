@@ -26,6 +26,25 @@ import type { Layer } from '@deck.gl/core'
 
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n))
 
+type WeatherPoint = {
+  lon: number
+  lat: number
+  speed: number
+  dir: number
+  gust?: number
+  temperature?: number
+  apparent_temperature?: number
+  humidity?: number
+  precipitation?: number
+  weather_code?: number
+  cloud_cover?: number
+  pressure_msl?: number
+  visibility?: number
+  wave_height?: number
+  wave_direction?: number
+  wave_period?: number
+}
+
 // ── Module-level render loop (decoupled from React) ──
 
 let rafId = 0
@@ -35,7 +54,7 @@ let loopRunning = false
 const layerData = {
   flights: null as GeoJSON.FeatureCollection | null,
   shipsArr: [] as GeoJSON.Feature[],
-  weather: [] as { lon: number; lat: number; speed: number; dir: number }[],
+  weather: [] as WeatherPoint[],
   reactors: null as GeoJSON.FeatureCollection | null,
   traffic: [] as { coordinates: [number, number][]; color: [number, number, number] }[],
   airports: null as GeoJSON.FeatureCollection | null,
@@ -335,11 +354,24 @@ export function useLayers() {
           const d = await r.json()
           const h = d.hourly
           if (!h) return null
+          const current = d.current ?? {}
           return {
             lon: p.lon,
             lat: p.lat,
-            speed: Number(h.windspeed_10m?.[0] ?? 0),
-            dir: Number(h.winddirection_10m?.[0] ?? 0),
+            speed: Number(current.wind_speed_10m ?? h.wind_speed_10m?.[0] ?? h.windspeed_10m?.[0] ?? 0),
+            dir: Number(current.wind_direction_10m ?? h.wind_direction_10m?.[0] ?? h.winddirection_10m?.[0] ?? 0),
+            gust: Number(current.wind_gusts_10m ?? h.wind_gusts_10m?.[0] ?? 0),
+            temperature: Number(current.temperature_2m ?? h.temperature_2m?.[0] ?? 0),
+            apparent_temperature: Number(current.apparent_temperature ?? h.apparent_temperature?.[0] ?? 0),
+            humidity: Number(current.relative_humidity_2m ?? h.relative_humidity_2m?.[0] ?? 0),
+            precipitation: Number(current.precipitation ?? h.precipitation?.[0] ?? 0),
+            weather_code: Number(current.weather_code ?? h.weather_code?.[0] ?? 0),
+            cloud_cover: Number(current.cloud_cover ?? h.cloud_cover?.[0] ?? 0),
+            pressure_msl: Number(current.pressure_msl ?? h.pressure_msl?.[0] ?? 0),
+            visibility: Number(current.visibility ?? h.visibility?.[0] ?? 0),
+            wave_height: Number(current.wave_height ?? h.wave_height?.[0] ?? 0),
+            wave_direction: Number(current.wave_direction ?? h.wave_direction?.[0] ?? 0),
+            wave_period: Number(current.wave_period ?? h.wave_period?.[0] ?? 0),
           }
         })
 
@@ -351,6 +383,7 @@ export function useLayers() {
               ...r,
               speed: clamp(r.speed, 0, 60),
               dir: ((r.dir % 360) + 360) % 360,
+              gust: Number.isFinite(r.gust ?? NaN) ? clamp(r.gust ?? 0, 0, 90) : undefined,
             }))
         }
       } catch { /* aborted */ }

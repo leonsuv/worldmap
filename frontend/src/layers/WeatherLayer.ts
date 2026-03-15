@@ -6,6 +6,18 @@ interface WindPoint {
   lat: number
   speed: number // m/s
   dir: number   // degrees, where wind is coming FROM
+  gust?: number
+  temperature?: number
+  apparent_temperature?: number
+  humidity?: number
+  precipitation?: number
+  weather_code?: number
+  cloud_cover?: number
+  pressure_msl?: number
+  visibility?: number
+  wave_height?: number
+  wave_direction?: number
+  wave_period?: number
 }
 
 function speedColor(speed: number): [number, number, number, number] {
@@ -19,6 +31,7 @@ function speedColor(speed: number): [number, number, number, number] {
 type WeatherGlyph = {
   path: [number, number][]
   speed: number
+  properties: Record<string, unknown>
 }
 
 export function buildWeatherLayer(data: WindPoint[]): Layer[] {
@@ -51,6 +64,24 @@ export function buildWeatherLayer(data: WindPoint[]): Layer[] {
         [rwx, rwy],
       ],
       speed: p.speed,
+      properties: {
+        lat: +p.lat.toFixed(2),
+        lon: +p.lon.toFixed(2),
+        wind_speed_ms: +p.speed.toFixed(1),
+        wind_direction_deg: +p.dir.toFixed(0),
+        wind_gust_ms: p.gust != null ? +p.gust.toFixed(1) : undefined,
+        temperature_c: p.temperature != null ? +p.temperature.toFixed(1) : undefined,
+        apparent_temperature_c: p.apparent_temperature != null ? +p.apparent_temperature.toFixed(1) : undefined,
+        relative_humidity_pct: p.humidity != null ? +p.humidity.toFixed(0) : undefined,
+        precipitation_mm: p.precipitation != null ? +p.precipitation.toFixed(2) : undefined,
+        cloud_cover_pct: p.cloud_cover != null ? +p.cloud_cover.toFixed(0) : undefined,
+        pressure_msl_hpa: p.pressure_msl != null ? +p.pressure_msl.toFixed(1) : undefined,
+        visibility_m: p.visibility != null ? +p.visibility.toFixed(0) : undefined,
+        weather_code: p.weather_code,
+        wave_height_m: p.wave_height != null ? +p.wave_height.toFixed(2) : undefined,
+        wave_direction_deg: p.wave_direction != null ? +p.wave_direction.toFixed(0) : undefined,
+        wave_period_s: p.wave_period != null ? +p.wave_period.toFixed(1) : undefined,
+      },
     }
   })
 
@@ -64,7 +95,7 @@ export function buildWeatherLayer(data: WindPoint[]): Layer[] {
       widthUnits: 'pixels',
       capRounded: true,
       jointRounded: true,
-      pickable: false,
+      pickable: true,
       opacity: 0.95,
     }),
   ]
