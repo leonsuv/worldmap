@@ -177,18 +177,42 @@ fn upsert_and_emit(
     let heading = heading.filter(|&h| h < 360.0);
     let course = course.filter(|&c| c < 360.0);
 
-    // Merge with existing entry to preserve static data fields
-    let existing = ship_store.get(&mmsi);
-    let ship_type = new_type.or_else(|| existing.as_ref().and_then(|s| s.ship_type));
-    let imo = existing.as_ref().and_then(|s| s.imo);
-    let callsign = existing.as_ref().and_then(|s| s.callsign.clone());
-    let destination = existing.as_ref().and_then(|s| s.destination.clone());
-    let eta = existing.as_ref().and_then(|s| s.eta.clone());
-    let draught = existing.as_ref().and_then(|s| s.draught);
-    let length = existing.as_ref().and_then(|s| s.length);
-    let beam = existing.as_ref().and_then(|s| s.beam);
-    let nav_status = nav_status.or_else(|| existing.as_ref().and_then(|s| s.nav_status));
-    let rate_of_turn = rate_of_turn.or_else(|| existing.as_ref().and_then(|s| s.rate_of_turn));
+    // Merge with existing entry to preserve static data fields.
+    // Important: copy fields out of DashMap first, then drop the read guard
+    // before calling insert() to avoid lock upgrade deadlocks.
+    let (
+        existing_ship_type,
+        imo,
+        callsign,
+        destination,
+        eta,
+        draught,
+        length,
+        beam,
+        existing_nav_status,
+        existing_rate_of_turn,
+    ) = {
+        if let Some(existing) = ship_store.get(&mmsi) {
+            (
+                existing.ship_type,
+                existing.imo,
+                existing.callsign.clone(),
+                existing.destination.clone(),
+                existing.eta.clone(),
+                existing.draught,
+                existing.length,
+                existing.beam,
+                existing.nav_status,
+                existing.rate_of_turn,
+            )
+        } else {
+            (None, None, None, None, None, None, None, None, None, None)
+        }
+    };
+
+    let ship_type = new_type.or(existing_ship_type);
+    let nav_status = nav_status.or(existing_nav_status);
+    let rate_of_turn = rate_of_turn.or(existing_rate_of_turn);
 
     ship_store.insert(mmsi, ShipPosition {
         mmsi,
