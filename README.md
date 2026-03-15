@@ -6,7 +6,7 @@
 
 Live ships · flights · weather · energy grids · pipelines · nuclear reactors · traffic · ports · airports
 
-[![CI](https://github.com/leobak/worldmap/actions/workflows/ci.yml/badge.svg)](https://github.com/leobak/worldmap/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/badge/Integration-CI-blue.svg)](https://github.com/leonsuv/worldmap/blob/main/.github/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 </div>
@@ -22,8 +22,6 @@ Live ships · flights · weather · energy grids · pipelines · nuclear reactor
 | HV Power Grid | Nuclear Reactors |
 |:---:|:---:|
 | ![HV Networks](docs/screenshots/hv-networks.png) | ![Reactors](docs/screenshots/reactors.png) |
-
-> **Note:** Add your screenshots to `docs/screenshots/`. Recommended size: 1280×720.
 
 ---
 
