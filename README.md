@@ -15,7 +15,7 @@ Live ships · flights · weather · energy grids · pipelines · nuclear reactor
 
 ## Screenshots
 
-| Live Ship Tracking | Pipeline & HV Networks |
+| Live Ship Tracking | Pipelines |
 |:---:|:---:|
 | ![Ships](docs/screenshots/ships.png) | ![Pipelines](docs/screenshots/pipelines.png) |
 
