@@ -2,6 +2,7 @@ import { Globe2, ArrowUpRight, Crosshair } from 'lucide-react'
 import { useViewportStore } from '../store/viewport'
 import { useLayerStore } from '../store/layers'
 import { useDataStatus } from '../store/dataStatus'
+import { useSourceAvailability, sourceAvailable } from '../store/sourceAvailability'
 import { mapInstance } from '../map/runtime'
 
 export default function MapHeader() {
@@ -9,7 +10,8 @@ export default function MapHeader() {
   const zoom = useViewportStore(s => s.zoom)
   const layers = useLayerStore()
   const sources = useDataStatus(s => s.sources)
-  const active = Object.entries(layers).filter(([, v]) => v === true).map(([k]) => k)
+  const capabilities = useSourceAvailability(s => s.data)
+  const active = Object.entries(layers).filter(([k, v]) => v === true && sourceAvailable(k, capabilities)).map(([k]) => k)
   const errors = active.filter(k => sources[k]?.state === 'error').length
   const loading = active.some(k => sources[k]?.state === 'loading')
   const longitude = ((center[0] + 180) % 360 + 360) % 360 - 180
@@ -23,6 +25,6 @@ export default function MapHeader() {
         {([{ name: 'World', center: [0, 20], zoom: 2 }, { name: 'Europe', center: [12, 49], zoom: 4 }, { name: 'Asia Pacific', center: [115, 20], zoom: 3 }] as const).map(region => <button key={region.name} onClick={() => mapInstance?.flyTo({ center: [...region.center], zoom: region.zoom, duration: 1000 })}>{region.name}<ArrowUpRight size={12} /></button>)}
       </div>
     </div>
-    <footer className="map-status"><span className={`status-dot ${errors ? 'is-error' : loading ? 'is-loading' : ''}`} /><span>{errors ? `${errors} source${errors > 1 ? 's' : ''} unavailable` : loading ? 'Updating map data' : active.length ? `${active.length} layers enabled` : 'Ready to explore'}</span><span className="status-coordinates"><Crosshair size={12} />{Math.abs(center[1]).toFixed(2)}° {center[1] < 0 ? 'S' : 'N'}<span> / </span>{Math.abs(longitude).toFixed(2)}° {longitude < 0 ? 'W' : 'E'}<span className="zoom-readout">Z {zoom.toFixed(1)}</span></span></footer>
+    <footer className="map-status"><span className={`status-dot ${errors ? 'is-error' : loading ? 'is-loading' : ''}`} /><span>{errors ? `${errors} source${errors > 1 ? 's' : ''} unavailable` : loading ? 'Updating map data' : active.length ? `${active.length} layer${active.length === 1 ? '' : 's'} enabled` : 'Ready to explore'}</span><span className="status-coordinates"><Crosshair size={12} />{Math.abs(center[1]).toFixed(2)}° {center[1] < 0 ? 'S' : 'N'}<span> / </span>{Math.abs(longitude).toFixed(2)}° {longitude < 0 ? 'W' : 'E'}<span className="zoom-readout">Z {zoom.toFixed(1)}</span></span></footer>
   </>
 }
