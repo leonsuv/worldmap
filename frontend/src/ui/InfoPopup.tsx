@@ -1,6 +1,5 @@
 import { memo, useCallback, useEffect, useRef } from 'react'
 import { usePopupStore } from '../store/popup'
-import { mapInstance } from '../map/MapContainer'
 
 const EXTERNAL_LINKS: Record<string, (p: Record<string, unknown>) => { label: string; href: string } | null> = {
   flights: (p) => p.callsign ? { label: 'Flightradar24', href: `https://www.flightradar24.com/${String(p.callsign).trim()}` } : null,
@@ -40,19 +39,14 @@ function InfoPopup() {
 
   if (!lngLat || !layerId || !properties) return null
 
-  // Project lngLat to screen position
-  const point = mapInstance?.project(lngLat)
-  if (!point) return null
-
   const ext = EXTERNAL_LINKS[layerId]?.(properties)
 
   return (
     <div
       ref={cardRef}
       className="info-popup"
-      style={{ left: point.x, top: point.y }}
     >
-      <button className="info-popup-close" onClick={close}>×</button>
+      <button aria-label="Close panel" className="info-popup-close" onClick={close}>×</button>
       <h3 className="info-popup-title">{layerId}</h3>
       <table className="info-popup-table">
         <tbody>

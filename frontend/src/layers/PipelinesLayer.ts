@@ -1,9 +1,10 @@
-import type maplibregl from 'maplibre-gl'
+import type * as maplibregl from 'maplibre-gl'
 
 const SOURCE_ID = 'pipelines-src'
 const LAYER_ID = 'pipelines'
 
 export function syncPipelinesLayer(map: maplibregl.Map, visible: boolean) {
+  if (!visible && !map.getLayer(LAYER_ID)) return
   // Add source + layer if not present
   if (!map.getSource(SOURCE_ID)) {
     try {

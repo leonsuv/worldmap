@@ -18,7 +18,7 @@ function AlertPanel() {
   return (
     <>
       {/* Badge button */}
-      <button className="alert-badge" onClick={toggle}>
+      <button aria-label="Alerts" title="Alerts" className="alert-badge" onClick={toggle}>
         <Bell size={16} />
         {count > 0 && <span className="alert-badge-count">{count > 99 ? '99+' : count}</span>}
       </button>
@@ -33,7 +33,7 @@ function AlertPanel() {
                 <CheckCheck size={14} /> Ack All
               </button>
             )}
-            <button className="alert-close" onClick={toggle}><X size={16} /></button>
+            <button aria-label="Close panel" className="alert-close" onClick={toggle}><X size={16} /></button>
           </div>
 
           <div className="alert-list">

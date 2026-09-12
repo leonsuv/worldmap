@@ -1,227 +1,199 @@
 <div align="center">
 
-# 🌍 WorldMap Infrastructure Explorer
+<img src="frontend/public/worldmap.svg" width="64" alt="WorldMap globe" />
 
-**Real-time global infrastructure visualization on a single interactive map.**
+# WORLDMAP.
 
-Live ships · flights · weather · energy grids · pipelines · nuclear reactors · traffic · ports · airports
+### Every connection. One world.
 
-[![CI](https://img.shields.io/badge/Integration-CI-blue.svg)](https://github.com/leonsuv/worldmap/blob/main/.github/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+Explore global transport, energy infrastructure and live activity in one interactive atlas.
+
+[![CI](https://github.com/leonsuv/worldmap/actions/workflows/ci.yml/badge.svg)](https://github.com/leonsuv/worldmap/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-c5d99a?style=flat-square)](LICENSE)
+![React 19](https://img.shields.io/badge/React-19-26343b?style=flat-square&logo=react)
+![Rust](https://img.shields.io/badge/Rust-Axum-26343b?style=flat-square&logo=rust)
+
+[Quick start](#quick-start) · [Gallery](#gallery) · [Map layers](#map-layers) · [Configuration](#configuration) · [Development](#development)
 
 </div>
 
----
+![WorldMap: dark atlas, grouped map layers and regional navigation](docs/screenshots/atlas-home.png)
 
-## Screenshots
+## A planet in perspective
 
-| Live Ship Tracking | Pipeline & HV Networks |
+Follow vessels, inspect airports and reactors, compare infrastructure, or explore the globe. WorldMap brings these views together with a focused interface, clear legends and controls that work on desktop and mobile.
+
+- **Explore your way.** Dark and light basemaps, a 3D globe, regional shortcuts and place search with keyboard navigation.
+- **Build a view.** Twelve independent layers, searchable groups and aviation, maritime and energy presets.
+- **Inspect the details.** Select features, examine vessel and flight information, and replay stored ship positions.
+- **Keep track.** Watchlists, geographic events, alerts and data exports.
+- **Run it yourself.** React and WebGL in the browser; a Rust server and SQLite on your machine.
+
+## Gallery
+
+Actual screenshots of the current application. Live counts and coverage vary with the connected data sources.
+
+### Live maritime activity
+
+![Live maritime atlas with vessel positions around Europe](docs/screenshots/atlas-maritime.png)
+
+| Energy infrastructure · Dark | The same view · Light |
 |:---:|:---:|
-| ![Ships](docs/screenshots/ships.png) | ![Pipelines](docs/screenshots/pipelines.png) |
+| [![Nuclear reactor locations across Europe in the dark atlas](docs/screenshots/atlas-energy.png)](docs/screenshots/atlas-energy.png) | [![Nuclear reactor locations across Europe in the light atlas](docs/screenshots/atlas-light.png)](docs/screenshots/atlas-light.png) |
+| Capacity-scaled markers and a focused layer panel. | A lighter basemap for comparing geography and locations. |
 
-| HV Power Grid | Nuclear Reactors |
-|:---:|:---:|
-| ![HV Networks](docs/screenshots/hv-networks.png) | ![Reactors](docs/screenshots/reactors.png) |
+<details>
+<summary><strong>Explore the globe</strong></summary>
 
----
+![WorldMap globe projection](docs/screenshots/atlas-globe.png)
 
-## Features
+Switch between the flat atlas and globe with the map controls.
 
-- **14+ map layers** toggled independently — ships, flights, weather, traffic, airports, seaports, nuclear reactors, pipelines, HV power lines, energy infrastructure, 3D buildings, and more
-- **Live AIS ship tracking** via WebSocket — MMSI, IMO, vessel type, course, speed, destination, ETA, cargo
-- **Live flight tracking** via OpenSky Network — callsign, origin, altitude, velocity
-- **Weather overlay** — temperature, precipitation, wind, cloud cover from Open-Meteo
-- **Traffic flow** — real-time congestion data from TomTom
-- **Vector tile layers** — pipelines, power grids, HV lines rendered from `.mbtiles`
-- **Click-to-inspect** — detailed panels for ships and flights with full metadata
-- **Self-hosted & lightweight** — single Rust binary + SQLite, no external database cluster
+</details>
 
-## Tech Stack
+## Map layers
 
-| Component | Technology |
+| Layer | Source / requirement |
 |---|---|
-| Backend | Rust, Axum 0.8, rusqlite, tokio, reqwest |
-| Frontend | React 19, TypeScript, Vite, MapLibre GL JS, deck.gl |
-| Storage | SQLite (`cache.db`, `static.db`, `*.mbtiles`) |
-| Data Ingestion | Python 3 scripts |
-| CI/CD | GitHub Actions (Linux, macOS, Windows) |
+| Vessels | AISstream live feed; API key required |
+| Flights | OpenSky Network; optional OAuth credentials |
+| Wind & weather | Open-Meteo |
+| Road traffic | TomTom; API key required, visible at street scale |
+| Airports | OurAirports; imported into the local database |
+| Seaports | OpenStreetMap; imported into the local database |
+| Navigation aids | AISstream buoys and beacons |
+| Nuclear reactors | GeoNuclearData / IAEA-derived data; local import |
+| Pipelines | Local pipeline vector tiles |
+| Power grid | Local Gridfinder vector tiles |
+| High-voltage lines | Local OpenStreetMap vector tiles |
+| 3D buildings | Basemap building data at street scale |
 
-## Quick Start
+Unavailable feeds and missing local tiles are shown in the layer panel. Historical replay requires previously recorded ship snapshots. Coverage and freshness depend on the source.
+
+## Quick start
+
+**Requirements:** stable Rust, Node.js 22.12+ and Python 3.10+. The setup scripts use Bash and Make. GDAL and tippecanoe are optional tools for generating vector tiles.
 
 ```sh
-# 1. Clone
-git clone https://github.com/leobak/worldmap.git
+git clone https://github.com/leonsuv/worldmap.git
 cd worldmap
 
-# 2. Configure API keys
-cp backend/.env.example backend/.env
-# Edit backend/.env and add your API keys (see below)
+# Install dependencies and import airports, seaports and reactors.
+# Also creates backend/.env from the example when absent.
+make setup
 
-# 3. Setup & run
-make setup   # install deps, create venv, ingest static data
-make dev     # start backend + frontend dev servers
+# Edit backend/.env to enable the live feeds you want.
+make dev
 ```
 
-Backend: `http://localhost:3000` · Frontend: `http://localhost:5173`
+Open **[localhost:5173](http://localhost:5173)**. The API runs at **[localhost:3000](http://localhost:3000)**.
 
-## Prerequisites
+No API key is needed to explore the basemap and imported static datasets. `make setup` downloads data; building optional tiles requires their source files and additional tools.
 
-- [Rust](https://rustup.rs/) (stable)
-- [Node.js](https://nodejs.org/) ≥ 20
-- Python 3.10+
-- Optional: [tippecanoe](https://github.com/felt/tippecanoe) + GDAL (for building `.mbtiles`)
-
-## Make Targets
-
-| Target | Description |
-|---|---|
-| `make setup` | One-time setup: install deps, create venv, ingest data |
-| `make dev` | Start backend + frontend dev servers in parallel |
-| `make build` | Production build: Rust release binary + Vite bundle |
-| `make ingest` | Re-run all Python data ingestion scripts |
-| `make tiles` | Build vector tiles from GeoPackage sources |
-| `make clean` | Remove build artifacts |
-
-## Manual Setup
+<details>
+<summary><strong>Production build</strong></summary>
 
 ```sh
-# Backend
+make build
 cd backend
-cp .env.example .env   # fill in your API keys
-cargo run
-
-# Frontend (separate terminal)
-cd frontend
-npm install
-npm run dev
-
-# Data ingestion (one-time)
-cd scripts
-python3 ingest_airports.py
-python3 ingest_seaports.py
-python3 ingest_reactors.py
+./target/release/worldmap-backend
 ```
+
+The backend serves the built frontend at [localhost:3000](http://localhost:3000). Run it from `backend/` so the default data and frontend paths resolve correctly. On Windows, the binary has an `.exe` extension.
+
+</details>
 
 ## Configuration
 
-### Environment Variables
+Set these values in `backend/.env`. Keep credentials out of Git.
 
-| Variable | Required | Description |
+| Variable | Purpose | Default |
 |---|---|---|
-| `AISSTREAM_API_KEY` | Yes | AIS ship tracking WebSocket stream |
-| `OPENSKY_CLIENT_ID` | No | OpenSky OAuth2 client (higher rate limits) |
-| `OPENSKY_CLIENT_SECRET` | No | OpenSky OAuth2 secret |
-| `TOMTOM_API_KEY` | No | TomTom traffic flow overlay |
-| `DATA_DIR` | No | Data directory (default: `../data`) |
-| `FRONTEND_DIR` | No | Frontend dist path (default: `../frontend/dist`) |
-| `BIND_ADDR` | No | Listen address (default: `0.0.0.0:3000`) |
+| `AISSTREAM_API_KEY` | Enables live vessels and navigation aids | Disabled without a key |
+| `OPENSKY_CLIENT_ID` | OpenSky OAuth client ID | Anonymous access |
+| `OPENSKY_CLIENT_SECRET` | OpenSky OAuth client secret | — |
+| `TOMTOM_API_KEY` | Enables road traffic | Disabled without a key |
+| `DATA_DIR` | Database and tile directory | `../data` |
+| `FRONTEND_DIR` | Built frontend directory | `../frontend/dist` |
+| `BIND_ADDR` | HTTP listen address | `0.0.0.0:3000` |
 
-### API Keys
+### Optional network tiles
 
-All external APIs used offer free tiers. No paid accounts are required.
+Place the generated MBTiles in `data/tiles/` and restart the backend:
 
-| Service | Free Tier | Sign Up |
-|---|---|---|
-| [AISstream](https://aisstream.io) | Free WebSocket stream | Required |
-| [OpenSky Network](https://opensky-network.org) | ~400 credits/day (anon), ~4000 (auth) | Optional |
-| [Open-Meteo](https://open-meteo.com) | Unlimited (non-commercial) | Not required |
-| [TomTom](https://developer.tomtom.com) | 2,500 req/day | Optional |
-| [Nominatim](https://nominatim.org) | 1 req/s | Not required |
-| [OpenFreeMap](https://openfreemap.org) | Unlimited | Not required |
-
-### Tile Data
-
-Place `.mbtiles` files in `data/tiles/`. They are auto-discovered at startup and served at `/tiles/{source}/{z}/{x}/{y}`.
-
-## Project Structure
-
-```
-├── backend/          # Rust Axum server
-│   └── src/
-│       ├── main.rs           # Server entry, route registration
-│       ├── routes/           # API endpoint handlers
-│       ├── db.rs             # SQLite schema & queries
-│       ├── state.rs          # Shared application state
-│       └── ws_fanout.rs      # WebSocket fan-out for AIS
-├── frontend/         # React + Vite SPA
-│   └── src/
-│       ├── layers/           # deck.gl / MapLibre layer definitions
-│       ├── store/            # Zustand state stores
-│       ├── ui/               # React UI components
-│       └── map/              # Map container
-├── scripts/          # Python ingestion & tile build scripts
-├── data/             # Runtime data (not in git)
-│   ├── tiles/                # .mbtiles vector tile files
-│   ├── cache.db              # API response cache (auto-created)
-│   └── static.db             # POI data (populated by scripts)
-├── .github/workflows/        # CI/CD pipelines
-├── Makefile
-└── LICENSE
+```text
+data/tiles/
+├── pipelines.mbtiles
+├── power-grid.mbtiles
+└── hv-lines.mbtiles
 ```
 
----
+The source names and internal tile layers must match the app. The supplied builders create the expected format:
 
-## ⚠️ Legal Notice & Disclaimer
-
-### Important: Read Before Use
-
-This software is provided **for educational and research purposes**. By using this software, you acknowledge and accept full responsibility for ensuring your use complies with all applicable laws and regulations in your jurisdiction.
-
-### Data Source Terms of Service
-
-This application aggregates data from multiple third-party APIs. **Each data source has its own terms of service, rate limits, and usage restrictions.** It is your responsibility to:
-
-1. **Read and comply with the terms of service** of every API you connect to
-2. **Respect rate limits** — exceeding them may violate the provider's ToS and result in your access being revoked
-3. **Verify commercial use rights** — some APIs (notably Open-Meteo, Nominatim, OpenFreeMap) are free for non-commercial use only. Commercial use may require a paid license or explicit permission
-
-### AIS & Maritime Data
-
-- AIS (Automatic Identification System) data is broadcast publicly over radio frequencies. Receiving and displaying AIS data is generally legal in most jurisdictions.
-- However, **redistributing, storing, or commercially exploiting AIS data** may be subject to national maritime regulations and the data provider's terms.
-- Some jurisdictions restrict tracking of military, government, or certain flagged vessels. Ensure compliance with local maritime law.
-
-### Aviation Data (OpenSky Network)
-
-- OpenSky Network data is provided under their specific [terms of use](https://opensky-network.org/about/terms-of-use).
-- Tracking military aircraft or using flight data for surveillance purposes may be restricted or illegal in certain jurisdictions.
-- If you use OpenSky data in academic publications, proper citation is required.
-
-### Web Scraping & API Usage
-
-- The ingestion scripts in `scripts/` fetch data from various public sources (OurAirports, OpenStreetMap Overpass, GeoNuclearData).
-- **Automated data collection may violate certain websites' terms of service**, even when the data itself is publicly available.
-- Overpass API (OpenStreetMap) has strict [usage policies](https://operations.osmfoundation.org/policies/nominatim/). Heavy or abusive querying is prohibited.
-- Always use appropriate request intervals and respect `robots.txt` where applicable.
-
-### GIS & Map Data
-
-- OpenStreetMap data is licensed under [ODbL](https://opendatacommons.org/licenses/odbl/). If you distribute derived datasets, you must comply with ODbL attribution and share-alike requirements.
-- GeoPackage data used for pipeline and power grid tiles may originate from government open-data portals with their own license terms.
-
-### Nuclear Facility Data
-
-- Nuclear reactor locations are sourced from [GeoNuclearData](https://github.com/cristianst85/GeoNuclearData), which compiles publicly available IAEA data.
-- Displaying nuclear facility locations is legal in most countries, as this information is publicly available through the IAEA. However, combining it with other operational data could raise security concerns in some jurisdictions.
-
-### No Warranty
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. THE AUTHORS ARE NOT LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM THE USE OF THIS SOFTWARE OR THE DATA IT ACCESSES. See [LICENSE](LICENSE) for the full MIT license text.
-
-### Your Responsibility
-
-- **Do not use this tool for illegal surveillance, military intelligence, or any unlawful purpose.**
-- **Do not redistribute third-party data** without verifying you have the right to do so.
-- **Comply with GDPR** and equivalent data protection laws if you store or process data that could identify individuals (e.g., vessel crew, aircraft operators).
-- When in doubt, consult a legal professional in your jurisdiction.
-
----
-
-## Contributing
-
-Contributions are welcome! Please open an issue or submit a pull request.
-
-## License
-
-[MIT](LICENSE) — Copyright 2026 leonsuv
+```sh
+make pipeline-tiles   # Pipeline source download and tile build
+make grid-tiles       # Power grid and high-voltage tile build
 ```
+
+These jobs require GDAL and tippecanoe and may download large datasets. See [the scripts](scripts/) before running them.
+
+## Built for smoother exploration
+
+Layer updates are scheduled when data changes, unchanged layers are reused, and live vessel updates are batched. The interface loads before the larger map modules. Static datasets are serialized and compressed once, then served from shared buffers with HTTP caching.
+
+For the measured local airport dataset, gzip reduces the response from **1.08 MB to 195 KB — about 82% less transfer**. This is an endpoint measurement, not a claim about total application speed.
+
+[Read the upgrade report, regression fixes and measurement limits →](docs/upgrade-review.md)
+
+## Development
+
+| Component | Technology |
+|---|---|
+| Interface | React 19 · TypeScript · Zustand · Vite |
+| Map rendering | MapLibre GL JS 6 · deck.gl 9.4 |
+| API & live feeds | Rust · Axum · Tokio · WebSockets |
+| Storage | SQLite · GeoJSON · MBTiles |
+| Data import | Python |
+| Checks | ESLint · Vitest · Rust tests · HTTP smoke checks |
+
+```sh
+# Frontend checks
+cd frontend
+npm ci
+npm run lint
+npm test
+npm run build
+
+# Backend regression tests
+cd ../backend
+cargo test
+
+# From the repository root, with the backend running:
+python3 scripts/test_smoke.py
+```
+
+GitHub Actions runs frontend checks and backend tests/builds on Linux, macOS and Windows. The current regression suite contains **17 frontend tests, 7 Rust tests and 17 HTTP smoke checks**.
+
+<details>
+<summary><strong>Project layout</strong></summary>
+
+```text
+backend/src/          API routes, caching, persistence and live feeds
+frontend/src/
+  layers/             Map layers and update scheduling
+  map/                Map runtime, styles and integration
+  store/              Application state
+  ui/                 Controls and panels
+frontend/tests/       Frontend regression tests
+scripts/              Setup, ingestion, tile builders and smoke checks
+docs/                 Screenshots and upgrade notes
+data/                 Local runtime data; excluded from Git
+```
+
+</details>
+
+## Contributing & license
+
+Bug reports and contributions are welcome. Include reproduction steps and relevant layer/data-source information when reporting a problem.
+
+WorldMap is [MIT licensed](LICENSE). Map data and third-party services retain their own licenses and terms; see the [project's data-source notices](docs/DATA-SOURCES.md). Basemaps use CARTO and OpenStreetMap attribution displayed in the application.

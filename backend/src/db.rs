@@ -197,7 +197,7 @@ impl DbPool {
     /// Persist a batch of ship positions (upsert).
     pub fn save_ships(&self, ships: &[(u64, f64, f64, Option<f64>, Option<f64>, Option<f64>, &str, Option<u32>, i64)]) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute_batch("BEGIN")?;
+        let transaction = conn.unchecked_transaction()?;
         {
             let mut stmt = conn.prepare_cached(
                 "INSERT OR REPLACE INTO ships (mmsi, lat, lon, course, speed, heading, ship_name, ship_type, updated_at)
@@ -207,14 +207,14 @@ impl DbPool {
                 stmt.execute(rusqlite::params![s.0 as i64, s.1, s.2, s.3, s.4, s.5, s.6, s.7, s.8])?;
             }
         }
-        conn.execute_batch("COMMIT")?;
+        transaction.commit()?;
         Ok(())
     }
 
     /// Append a batch of ship positions into the history table.
     pub fn save_ship_history(&self, ships: &[(u64, f64, f64, Option<f64>, Option<f64>, Option<f64>, &str, Option<u32>, i64)]) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute_batch("BEGIN")?;
+        let transaction = conn.unchecked_transaction()?;
         {
             let mut stmt = conn.prepare_cached(
                 "INSERT INTO ship_history (mmsi, lat, lon, course, speed, heading, ship_name, ship_type, recorded_at)
@@ -224,7 +224,7 @@ impl DbPool {
                 stmt.execute(rusqlite::params![s.0 as i64, s.1, s.2, s.3, s.4, s.5, s.6, s.7, s.8])?;
             }
         }
-        conn.execute_batch("COMMIT")?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -254,5 +254,31 @@ impl DbPool {
         let cutoff = chrono::Utc::now().timestamp() - max_age_secs;
         let count = conn.execute("DELETE FROM ship_history WHERE recorded_at < ?1", rusqlite::params![cutoff])?;
         Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn failed_ship_batch_rolls_back_and_next_batch_succeeds() {
+        let db = DbPool::open_cache(":memory:").unwrap();
+        db.conn().execute_batch("CREATE TRIGGER reject_bad_ship BEFORE INSERT ON ships WHEN NEW.ship_name = 'bad' BEGIN SELECT RAISE(ABORT, 'test failure'); END;").unwrap();
+        assert!(db.save_ships(&[(1, 0.0, 0.0, None, None, None, "good", None, 1), (2, 0.0, 0.0, None, None, None, "bad", None, 1)]).is_err());
+        let count: i64 = db.conn().query_row("SELECT COUNT(*) FROM ships", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+        db.save_ships(&[(3, 0.0, 0.0, None, None, None, "next", None, 2)]).unwrap();
+        let count: i64 = db.conn().query_row("SELECT COUNT(*) FROM ships", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1);
+    }
+    #[test]
+    fn history_preserves_missing_ais_fields() {
+        let db = DbPool::open_cache(":memory:").unwrap();
+        db.save_ship_history(&[(1, 52.0, 13.0, None, None, None, "Unknown course", None, 300)]).unwrap();
+        let rows = db.load_ship_history(300, 300).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].3.is_none());
+        assert!(rows[0].4.is_none());
+        assert!(rows[0].7.is_none());
     }
 }

@@ -1,8 +1,11 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { createRenderScheduler, memoizeLayer } from './renderScheduler'
+import { weatherSamplePoints } from './weatherSampling'
+import { useDataStatus } from '../store/dataStatus'
 import { useLayerStore } from '../store/layers'
 import { useViewportStore } from '../store/viewport'
 import { usePopupStore } from '../store/popup'
-import { deckOverlay, mapInstance } from '../map/MapContainer'
+import { deckOverlay, mapInstance } from '../map/runtime'
 import { buildFlightsLayer, buildTrackLayer } from './FlightsLayer'
 import { buildShipsLayer, startShipsWs, stopShipsWs } from './ShipsLayer'
 import { buildWeatherLayer } from './WeatherLayer'
@@ -47,11 +50,18 @@ type WeatherPoint = {
 
 // ── Module-level render loop (decoupled from React) ──
 
-let rafId = 0
-let loopRunning = false
+const scheduler = createRenderScheduler(renderLoop)
+const builders = {
+  flights: memoizeLayer(buildFlightsLayer), ships: memoizeLayer(buildShipsLayer),
+  weather: memoizeLayer(buildWeatherLayer), reactors: memoizeLayer(buildReactorsLayer),
+  traffic: memoizeLayer(buildTrafficLayer), airports: memoizeLayer(buildAirportsLayer),
+  seaports: memoizeLayer(buildSeaportsLayer), aton: memoizeLayer(buildAtoNLayer),
+  track: memoizeLayer(buildTrackLayer), events: memoizeLayer(buildEventRadiusLayers),
+  history: memoizeLayer(buildHistoryShipsLayer),
+}
 
 // Mutable refs read by the RAF loop — never cause React re-renders
-const layerData = {
+const layerData = new Proxy({
   flights: null as GeoJSON.FeatureCollection | null,
   shipsArr: [] as GeoJSON.Feature[],
   weather: [] as WeatherPoint[],
@@ -63,7 +73,14 @@ const layerData = {
   flightTrack: null as [number, number, number][] | null,
   eventRadii: [] as import('../store/events').EventItem[],
   historyPositions: [] as import('../store/history').HistoryPoint[],
-}
+}, {
+  set(target, key, value) {
+    const changed = Reflect.get(target, key) !== value
+    Reflect.set(target, key, value)
+    if (changed) scheduler.invalidate()
+    return true
+  },
+})
 
 // Snapshot of store booleans + zoom, written from React, read from RAF
 const flags = {
@@ -81,26 +98,38 @@ const flags = {
 
 // ── Flight detail: fetch track + recent flights when a flight is clicked ──
 
+let flightSelection = 0
+let flightController: AbortController | null = null
+
 async function selectFlight(icao24: string, callsign: string, origin_country: string) {
   if (!icao24) return
+  const selection = ++flightSelection
+  flightController?.abort()
+  const ac = new AbortController()
+  flightController = ac
+  layerData.flightTrack = null
+  const current = () => selection === flightSelection && !ac.signal.aborted && useFlightDetailStore.getState().detail?.icao24 === icao24
   const store = useFlightDetailStore.getState()
   store.select(icao24, callsign, origin_country)
 
   // Fetch live track (time=0 means current flight)
   try {
-    const r = await fetch(`/api/flights/track?icao24=${encodeURIComponent(icao24)}&time=0`)
+    const r = await fetch(`/api/flights/track?icao24=${encodeURIComponent(icao24)}&time=0`, { signal: ac.signal })
     if (r.ok) {
       const data = await r.json()
-      const path: [number, number, number][] = (data.path ?? []).map(
+      if (!current()) return
+      const path: [number, number, number][] = (data.path ?? []).filter((wp: (number | null)[]) => typeof wp[1] === 'number' && typeof wp[2] === 'number' && Number.isFinite(wp[1]) && Number.isFinite(wp[2])).map(
         (wp: (number | null)[]) => [wp[2] ?? 0, wp[1] ?? 0, wp[3] ?? 0]  // [lon, lat, alt]
       )
       store.setTrack(path)
       layerData.flightTrack = path
     } else {
+      if (!current()) return
       store.setTrack([])
       layerData.flightTrack = null
     }
   } catch {
+    if (!current()) return
     store.setTrack([])
     layerData.flightTrack = null
   }
@@ -112,10 +141,11 @@ async function selectFlight(icao24: string, callsign: string, origin_country: st
     const endOfToday = now - (now % 86400)        // start of current UTC day
     const begin = endOfToday - 86400              // 24h before that
     const r = await fetch(
-      `/api/flights/aircraft?icao24=${encodeURIComponent(icao24)}&begin=${begin}&end=${endOfToday}`
+      `/api/flights/aircraft?icao24=${encodeURIComponent(icao24)}&begin=${begin}&end=${endOfToday}`, { signal: ac.signal }
     )
     if (r.ok) {
       const data = await r.json()
+      if (!current()) return
       const flights: FlightRecord[] = (data as Record<string, unknown>[]).map((f) => ({
         icao24: String(f.icao24 ?? ''),
         firstSeen: Number(f.firstSeen ?? 0),
@@ -126,30 +156,31 @@ async function selectFlight(icao24: string, callsign: string, origin_country: st
       }))
       store.setFlights(flights)
     } else {
+      if (!current()) return
       store.setFlights([])
     }
   } catch {
+    if (!current()) return
     store.setFlights([])
   }
 
-  store.setLoading(false)
+  if (current()) store.setLoading(false)
 }
 
 function renderLoop() {
-  if (!loopRunning) return
   if (deckOverlay) {
     const dl: Layer[] = []
-    if (flags.flights && layerData.flights) dl.push(buildFlightsLayer(layerData.flights))
-    if (flags.ships && layerData.shipsArr.length) dl.push(buildShipsLayer(layerData.shipsArr))
-    if (flags.weather && layerData.weather.length) dl.push(...buildWeatherLayer(layerData.weather))
-    if (flags.reactors && layerData.reactors) dl.push(buildReactorsLayer(layerData.reactors))
-    if (flags.traffic && layerData.traffic.length) dl.push(buildTrafficLayer(layerData.traffic))
-    if (flags.airports && layerData.airports) dl.push(buildAirportsLayer(layerData.airports))
-    if (flags.seaports && layerData.seaports) dl.push(buildSeaportsLayer(layerData.seaports))
-    if (flags.aton && layerData.aton) dl.push(buildAtoNLayer(layerData.aton))
-    if (layerData.flightTrack && layerData.flightTrack.length > 1) dl.push(buildTrackLayer(layerData.flightTrack))
-    if (layerData.eventRadii.length) dl.push(...buildEventRadiusLayers(layerData.eventRadii))
-    if (layerData.historyPositions.length) dl.push(buildHistoryShipsLayer(layerData.historyPositions))
+    if (flags.flights && layerData.flights) dl.push(builders.flights(layerData.flights))
+    if (flags.ships && !useHistoryStore.getState().enabled && layerData.shipsArr.length) dl.push(builders.ships(layerData.shipsArr))
+    if (flags.weather && layerData.weather.length) dl.push(...builders.weather(layerData.weather))
+    if (flags.reactors && layerData.reactors) dl.push(builders.reactors(layerData.reactors))
+    if (flags.traffic && layerData.traffic.length) dl.push(builders.traffic(layerData.traffic))
+    if (flags.airports && layerData.airports) dl.push(builders.airports(layerData.airports))
+    if (flags.seaports && layerData.seaports) dl.push(builders.seaports(layerData.seaports))
+    if (flags.aton && layerData.aton) dl.push(builders.aton(layerData.aton))
+    if (layerData.flightTrack && layerData.flightTrack.length > 1) dl.push(builders.track(layerData.flightTrack))
+    if (layerData.eventRadii.length) dl.push(...builders.events(layerData.eventRadii))
+    if (layerData.historyPositions.length) dl.push(builders.history(layerData.historyPositions))
 
     deckOverlay.setProps({
       layers: dl,
@@ -159,6 +190,8 @@ function renderLoop() {
         const layer = info.layer as { id?: string } | null | undefined
         if (obj?.properties && coord && layer?.id) {
           if (layer.id === 'flights') {
+            useShipDetailStore.getState().close()
+            usePopupStore.getState().close()
             const p = obj.properties as Record<string, unknown>
             selectFlight(
               String(p.icao24 ?? ''),
@@ -166,6 +199,8 @@ function renderLoop() {
               String(p.origin_country ?? ''),
             )
           } else if (layer.id === 'ships') {
+            useFlightDetailStore.getState().close()
+            usePopupStore.getState().close()
             const p = obj.properties as Record<string, unknown>
             useShipDetailStore.getState().select({
               mmsi: Number(p.mmsi ?? 0),
@@ -184,24 +219,14 @@ function renderLoop() {
               nav_status: p.nav_status != null ? Number(p.nav_status) : null,
             } as ShipDetail)
           } else {
+            useFlightDetailStore.getState().close()
+            useShipDetailStore.getState().close()
             flags.openPopup?.([coord[0], coord[1]], layer.id, obj.properties)
           }
         }
       },
     })
   }
-  rafId = requestAnimationFrame(renderLoop)
-}
-
-function startLoop() {
-  if (loopRunning) return
-  loopRunning = true
-  rafId = requestAnimationFrame(renderLoop)
-}
-
-function stopLoop() {
-  loopRunning = false
-  cancelAnimationFrame(rafId)
 }
 
 // ── React hook: manages data fetching, writes into module-level refs ──
@@ -210,6 +235,23 @@ export function useLayers() {
   const layers = useLayerStore()
   const viewport = useViewportStore()
   const openPopup = usePopupStore((s) => s.open)
+  const [availableTiles, setAvailableTiles] = useState<string[]>([])
+  useEffect(() => {
+    const ac = new AbortController()
+    fetch('/api/status', { signal: ac.signal }).then(r => {
+      if (!r.ok) throw new Error('Backend unavailable')
+      return r.json()
+    }).then(data => {
+      if (ac.signal.aborted) return
+      setAvailableTiles(data.tiles)
+      for (const [key, source] of [['pipelines', 'pipelines'], ['powerGrid', 'power-grid'], ['hvLines', 'hv-lines']]) {
+        useDataStatus.getState().set(key, data.tiles.includes(source) ? { state: 'ready' } : { state: 'error', message: 'Local map data not installed' })
+      }
+    }).catch(() => {
+      if (!ac.signal.aborted) for (const key of ['pipelines', 'powerGrid', 'hvLines']) useDataStatus.getState().set(key, { state: 'error', message: 'Backend unavailable' })
+    })
+    return () => ac.abort()
+  }, [])
 
   // Keep flags in sync for the RAF loop
   useEffect(() => {
@@ -223,15 +265,21 @@ export function useLayers() {
     flags.aton = layers.aton
     flags.zoom = viewport.zoom
     flags.openPopup = openPopup
+    scheduler.invalidate()
   })
 
   // Start / stop RAF loop
-  useEffect(() => { startLoop(); return stopLoop }, [])
+  useEffect(() => {
+    scheduler.start()
+    const onVisible = () => { if (!document.hidden) scheduler.invalidate() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => { scheduler.stop(); flightController?.abort(); document.removeEventListener('visibilitychange', onVisible) }
+  }, [])
 
   // ── Clear flight track when detail panel closes ──
   useEffect(() => {
     return useFlightDetailStore.subscribe((s) => {
-      if (!s.detail) layerData.flightTrack = null
+      if (!s.detail) { flightController?.abort(); layerData.flightTrack = null }
     })
   }, [])
 
@@ -246,12 +294,20 @@ export function useLayers() {
     }
     const ac = new AbortController()
     flightsAbort.current = ac
+    let inFlight = false
     const fetchFlights = async () => {
-      if (document.visibilityState === 'hidden') return
+      if (document.hidden || inFlight) return
+      inFlight = true
+      useDataStatus.getState().set('flights', { state: 'loading' })
       try {
         const r = await fetch('/api/flights', { signal: ac.signal })
-        if (r.ok && !ac.signal.aborted) layerData.flights = await r.json()
-      } catch { /* aborted or network error */ }
+        if (!r.ok) throw new Error('Flights unavailable')
+        const data = await r.json()
+        if (!ac.signal.aborted) {
+          layerData.flights = data
+          useDataStatus.getState().set('flights', { state: data.stale ? 'error' : 'ready', count: data.features.length, message: data.stale ? 'Cached positions · live feed unavailable' : undefined })
+        }
+      } catch { if (!ac.signal.aborted) useDataStatus.getState().set('flights', { state: 'error' }) } finally { inFlight = false }
     }
     fetchFlights()
     const id = setInterval(fetchFlights, 30_000)
@@ -268,11 +324,10 @@ export function useLayers() {
       layerData.shipsArr = []
       return
     }
-    startShipsWs(shipsMap.current)
-    const id = setInterval(() => {
+    startShipsWs(shipsMap.current, () => {
       layerData.shipsArr = Array.from(shipsMap.current.values())
-    }, 2_000)
-    return () => { clearInterval(id); stopShipsWs() }
+    })
+    return stopShipsWs
   }, [layers.ships])
 
   // ── Weather ──
@@ -288,37 +343,6 @@ export function useLayers() {
       }
       layerData.weather = []
       return
-    }
-
-    const getWeatherSamplePoints = (
-      bbox: [number, number, number, number],
-      zoom: number,
-    ): { lat: number; lon: number }[] => {
-      const [w, s, e, n] = bbox
-      const cw = Math.max(-180, w)
-      const cs = Math.max(-90, s)
-      const ce = Math.min(180, e)
-      const cn = Math.min(90, n)
-
-      const cols = zoom < 3.2 ? 5 : zoom < 5.5 ? 6 : 7
-      const rows = zoom < 3.2 ? 3 : zoom < 5.5 ? 4 : 5
-
-      const dLon = (ce - cw) / cols
-      const dLat = (cn - cs) / rows
-      if (!Number.isFinite(dLon) || !Number.isFinite(dLat) || dLon <= 0 || dLat <= 0) return []
-
-      const points: { lat: number; lon: number }[] = []
-      for (let r = 0; r <= rows; r++) {
-        for (let c = 0; c <= cols; c++) {
-          const lon = +(cw + c * dLon).toFixed(2)
-          const lat = +(cs + r * dLat).toFixed(2)
-          points.push({ lat, lon })
-        }
-      }
-
-      // Hard upper bound to protect upstream API.
-      const limit = zoom < 4 ? 16 : 24
-      return points.slice(0, limit)
     }
 
     const mapWithConcurrency = async <T, R>(
@@ -344,7 +368,8 @@ export function useLayers() {
     weatherAbort.current = ac
 
     const fetchWeather = async () => {
-      const points = getWeatherSamplePoints(viewport.bbox, viewport.zoom)
+      useDataStatus.getState().set('weather', { state: 'loading' })
+      const points = weatherSamplePoints(viewport.bbox, viewport.zoom)
       if (points.length === 0) return
 
       try {
@@ -352,8 +377,8 @@ export function useLayers() {
           const r = await fetch(`/api/weather?lat=${p.lat}&lon=${p.lon}`, { signal: ac.signal })
           if (!r.ok) return null
           const d = await r.json()
-          const h = d.hourly
-          if (!h) return null
+          const h = d.hourly ?? {}
+          if (!d.hourly && !d.current) return null
           const current = d.current ?? {}
           return {
             lon: p.lon,
@@ -368,10 +393,6 @@ export function useLayers() {
             weather_code: Number(current.weather_code ?? h.weather_code?.[0] ?? 0),
             cloud_cover: Number(current.cloud_cover ?? h.cloud_cover?.[0] ?? 0),
             pressure_msl: Number(current.pressure_msl ?? h.pressure_msl?.[0] ?? 0),
-            visibility: Number(current.visibility ?? h.visibility?.[0] ?? 0),
-            wave_height: Number(current.wave_height ?? h.wave_height?.[0] ?? 0),
-            wave_direction: Number(current.wave_direction ?? h.wave_direction?.[0] ?? 0),
-            wave_period: Number(current.wave_period ?? h.wave_period?.[0] ?? 0),
           }
         })
 
@@ -386,7 +407,8 @@ export function useLayers() {
               gust: Number.isFinite(r.gust ?? NaN) ? clamp(r.gust ?? 0, 0, 90) : undefined,
             }))
         }
-      } catch { /* aborted */ }
+        if (!ac.signal.aborted) useDataStatus.getState().set('weather', { state: layerData.weather.length ? 'ready' : 'error', count: layerData.weather.length })
+      } catch { if (!ac.signal.aborted) useDataStatus.getState().set('weather', { state: 'error' }) }
     }
 
     weatherDebounce.current = window.setTimeout(fetchWeather, 450)
@@ -403,10 +425,11 @@ export function useLayers() {
   useEffect(() => {
     if (!layers.reactors || layerData.reactors) return
     const ac = new AbortController()
+    useDataStatus.getState().set('reactors', { state: 'loading' })
     fetch('/api/reactors', { signal: ac.signal })
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { layerData.reactors = d })
-      .catch(() => {})
+      .then(r => { if (!r.ok) throw new Error('Unavailable'); return r.json() })
+      .then(d => { if (!ac.signal.aborted) { layerData.reactors = d; useDataStatus.getState().set('reactors', { state: 'ready', count: d.features.length }) } })
+      .catch(() => { if (!ac.signal.aborted) useDataStatus.getState().set('reactors', { state: 'error' }) })
     return () => ac.abort()
   }, [layers.reactors])
 
@@ -426,15 +449,17 @@ export function useLayers() {
       const [w, s, e, n] = viewport.bbox
       try {
         const r = await fetch(`/api/traffic?bbox=${w},${s},${e},${n}`, { signal: ac.signal })
-        if (!r.ok) return
+        if (!r.ok) throw new Error('Traffic unavailable')
         const d = await r.json()
+        if (ac.signal.aborted) return
         const seg = d.flowSegmentData
         if (!seg?.coordinates?.coordinate) return
         const coords = seg.coordinates.coordinate.map((c: { latitude: number; longitude: number }) => [c.longitude, c.latitude] as [number, number])
         const ratio = seg.currentSpeed / Math.max(seg.freeFlowSpeed, 1)
         const color: [number, number, number] = ratio > 0.75 ? [0, 200, 0] : ratio > 0.5 ? [255, 200, 0] : ratio > 0.25 ? [255, 80, 0] : [200, 0, 0]
         layerData.traffic = [{ coordinates: coords, color }]
-      } catch { /* aborted */ }
+        useDataStatus.getState().set('traffic', { state: 'ready', count: 1 })
+      } catch { if (!ac.signal.aborted) { layerData.traffic = []; useDataStatus.getState().set('traffic', { state: 'error' }) } }
     }
     const timer = setTimeout(fetchTraffic, 1000)
     return () => { clearTimeout(timer); trafficAbort.current?.abort() }
@@ -444,10 +469,11 @@ export function useLayers() {
   useEffect(() => {
     if (!layers.airports || layerData.airports) return
     const ac = new AbortController()
+    useDataStatus.getState().set('airports', { state: 'loading' })
     fetch('/api/airports', { signal: ac.signal })
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { layerData.airports = d })
-      .catch(() => {})
+      .then(r => { if (!r.ok) throw new Error('Unavailable'); return r.json() })
+      .then(d => { if (!ac.signal.aborted) { layerData.airports = d; useDataStatus.getState().set('airports', { state: 'ready', count: d.features.length }) } })
+      .catch(() => { if (!ac.signal.aborted) useDataStatus.getState().set('airports', { state: 'error' }) })
     return () => ac.abort()
   }, [layers.airports])
 
@@ -455,10 +481,11 @@ export function useLayers() {
   useEffect(() => {
     if (!layers.seaports || layerData.seaports) return
     const ac = new AbortController()
+    useDataStatus.getState().set('seaports', { state: 'loading' })
     fetch('/api/seaports', { signal: ac.signal })
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { layerData.seaports = d })
-      .catch(() => {})
+      .then(r => { if (!r.ok) throw new Error('Unavailable'); return r.json() })
+      .then(d => { if (!ac.signal.aborted) { layerData.seaports = d; useDataStatus.getState().set('seaports', { state: 'ready', count: d.features.length }) } })
+      .catch(() => { if (!ac.signal.aborted) useDataStatus.getState().set('seaports', { state: 'error' }) })
     return () => ac.abort()
   }, [layers.seaports])
 
@@ -473,11 +500,17 @@ export function useLayers() {
     }
     const ac = new AbortController()
     atonAbort.current = ac
+    let inFlight = false
     const fetchAton = async () => {
+      if (document.hidden || inFlight) return
+      inFlight = true
+      useDataStatus.getState().set('aton', { state: 'loading' })
       try {
         const r = await fetch('/api/ships/aton', { signal: ac.signal })
-        if (r.ok && !ac.signal.aborted) layerData.aton = await r.json()
-      } catch { /* aborted */ }
+        if (!r.ok) throw new Error('Navigation aids unavailable')
+        const data = await r.json()
+        if (!ac.signal.aborted) { layerData.aton = data; useDataStatus.getState().set('aton', { state: 'ready', count: data.features.length }) }
+      } catch { if (!ac.signal.aborted) useDataStatus.getState().set('aton', { state: 'error' }) } finally { inFlight = false }
     }
     fetchAton()
     const id = setInterval(fetchAton, 60_000)
@@ -489,18 +522,21 @@ export function useLayers() {
     if (!mapInstance) return
     const map = mapInstance
     const onStyleLoad = () => {
-      syncPipelinesLayer(map, layers.pipelines)
-      syncPowerGridLayer(map, layers.powerGrid, layers.hvLines)
+      syncPipelinesLayer(map, layers.pipelines && availableTiles.includes('pipelines'))
+      syncPowerGridLayer(map, layers.powerGrid && availableTiles.includes('power-grid'), layers.hvLines && availableTiles.includes('hv-lines'))
       syncBuildings3DLayer(map, layers.buildings3d, viewport.zoom)
+      scheduler.invalidate()
     }
     if (map.isStyleLoaded()) onStyleLoad()
-    else map.once('style.load', onStyleLoad)
-  }, [layers.pipelines, layers.powerGrid, layers.hvLines, layers.buildings3d, viewport.zoom])
+    map.on('style.load', onStyleLoad)
+    return () => { map.off('style.load', onStyleLoad) }
+  }, [layers.pipelines, layers.powerGrid, layers.hvLines, layers.buildings3d, viewport.zoom, availableTiles])
 
   // ── Event radius circles (sync from event store) ──
   useEffect(() => {
-    return useEventStore.subscribe(s => {
-      layerData.eventRadii = s.events.filter(e => e.active)
+    layerData.eventRadii = useEventStore.getState().events.filter(e => e.active)
+    return useEventStore.subscribe((s, previous) => {
+      if (s.events !== previous.events) layerData.eventRadii = s.events.filter(e => e.active)
     })
   }, [])
 

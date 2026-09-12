@@ -1,53 +1,102 @@
 import { IconLayer } from '@deck.gl/layers'
+import { useDataStatus } from '../store/dataStatus'
 
-let ws: WebSocket | null = null
-let snapshotLoaded = false
+let cleanup: (() => void) | null = null
 
-export function startShipsWs(store: Map<number, GeoJSON.Feature>) {
-  if (ws) return
-
-  // Load snapshot first
-  if (!snapshotLoaded) {
-    fetch('/api/ships/snapshot')
-      .then(r => r.ok ? r.json() as Promise<GeoJSON.FeatureCollection> : null)
-      .then(fc => {
-        if (!fc) return
-        for (const f of fc.features) {
-          const mmsi = f.properties?.mmsi
-          if (mmsi != null) store.set(mmsi, f)
-        }
-        snapshotLoaded = true
-      })
+export function startShipsWs(store: Map<number, GeoJSON.Feature>, onUpdate: () => void) {
+  stopShipsWs()
+  const ac = new AbortController()
+  let socket: WebSocket | null = null
+  let reconnect: ReturnType<typeof setTimeout> | undefined
+  let publish: ReturnType<typeof setTimeout> | undefined
+  let attempt = 0
+  let stopped = false
+  const seen = new Map<number, number>()
+  const streamed = new Set<number>()
+  const notify = () => {
+    if (publish || stopped) return
+    publish = setTimeout(() => {
+      publish = undefined
+      if (!stopped) {
+        onUpdate()
+        useDataStatus.getState().set('ships', { state: socket?.readyState === WebSocket.OPEN ? 'ready' : 'loading', count: store.size })
+      }
+    }, 500)
   }
-
-  // Open WebSocket
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  ws = new WebSocket(`${proto}//${location.host}/api/ships/ws`)
-
-  ws.onmessage = (ev) => {
-    try {
-      const f: GeoJSON.Feature = JSON.parse(ev.data)
-      const mmsi = f.properties?.mmsi
-      if (mmsi != null) store.set(mmsi, f)
-    } catch { /* ignore malformed */ }
+  const receive = (feature: GeoJSON.Feature, snapshot = false) => {
+    const mmsi = Number(feature.properties?.mmsi)
+    if (!Number.isFinite(mmsi) || feature.geometry?.type !== 'Point') return
+    const [lon, lat] = feature.geometry.coordinates
+    if (!Number.isFinite(lon) || !Number.isFinite(lat) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return
+    // A late snapshot must never overwrite a newer streamed position.
+    if (snapshot && streamed.has(mmsi)) return
+    store.set(mmsi, feature)
+    const timestamp = Number(feature.properties?.timestamp)
+    seen.set(mmsi, Number.isFinite(timestamp) && timestamp > 0 ? timestamp * 1000 : Date.now())
+    if (!snapshot) streamed.add(mmsi)
+    notify()
   }
-
-  ws.onclose = () => { ws = null }
-  ws.onerror = () => { ws?.close(); ws = null }
+  const connect = () => {
+    if (stopped) return
+    useDataStatus.getState().set('ships', { state: 'loading', count: store.size })
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const ws = new WebSocket(`${proto}//${location.host}/api/ships/ws`)
+    socket = ws
+    ws.onopen = () => {
+      attempt = 0
+      useDataStatus.getState().set('ships', { state: 'ready', count: store.size })
+      // Resynchronize after reconnect; keep messages arriving during the fetch.
+      streamed.clear()
+      fetch('/api/ships/snapshot', { signal: ac.signal })
+        .then(r => { if (!r.ok) throw new Error('Snapshot unavailable'); return r.json() as Promise<GeoJSON.FeatureCollection> })
+        .then(fc => {
+          if (stopped || socket !== ws) return
+          const snapshotIds = new Set(fc.features.map(feature => Number(feature.properties?.mmsi)))
+          for (const mmsi of store.keys()) if (!snapshotIds.has(mmsi) && !streamed.has(mmsi)) { store.delete(mmsi); seen.delete(mmsi) }
+          for (const feature of fc.features) receive(feature, true)
+          notify()
+        })
+        .catch(() => { if (!stopped && socket === ws) useDataStatus.getState().set('ships', { state: 'error', count: store.size, message: 'Snapshot unavailable' }) })
+    }
+    ws.onmessage = (event) => {
+      if (stopped || socket !== ws) return
+      try { receive(JSON.parse(event.data)) } catch { /* Ignore malformed messages. */ }
+    }
+    ws.onclose = () => {
+      if (stopped || socket !== ws) return
+      useDataStatus.getState().set('ships', { state: 'error', count: store.size, message: 'Reconnecting…' })
+      reconnect = setTimeout(connect, Math.min(30_000, 1000 * 2 ** attempt++))
+    }
+    ws.onerror = () => ws.close()
+  }
+  const prune = setInterval(() => {
+    let changed = false
+    const cutoff = Date.now() - 30 * 60_000
+    for (const [mmsi, timestamp] of seen) {
+      if (timestamp < cutoff) { seen.delete(mmsi); store.delete(mmsi); changed = true }
+    }
+    if (changed) notify()
+  }, 60_000)
+  cleanup = () => {
+    stopped = true
+    ac.abort()
+    clearTimeout(reconnect)
+    clearTimeout(publish)
+    clearInterval(prune)
+    if (socket) {
+      socket.onclose = null
+      socket.onerror = null
+      socket.onmessage = null
+      socket.onopen = null
+      socket.close()
+    }
+  }
+  connect()
 }
 
 export function stopShipsWs() {
-  if (ws) {
-    const sock = ws
-    ws = null
-    sock.onclose = null
-    sock.onerror = null
-    sock.onmessage = null
-    if (sock.readyState === WebSocket.OPEN || sock.readyState === WebSocket.CONNECTING) {
-      sock.close()
-    }
-  }
-  snapshotLoaded = false
+  cleanup?.()
+  cleanup = null
 }
 
 /* ─── AIS ship-type → category mapping (MarineTraffic style) ─── */
@@ -107,27 +156,11 @@ const SHIP_MAPPING: Record<string, { x: number; y: number; width: number; height
   dot:   { x: ICON_SIZE, y: 0, width: ICON_SIZE, height: ICON_SIZE, anchorY: 32, mask: true },
 }
 
-// Reusable typed-array buffer for ship positions
-let shipPosBuf = new Float32Array(0)
-
-function ensureShipPositions(features: GeoJSON.Feature[]): Float32Array {
-  const needed = features.length * 2
-  if (shipPosBuf.length < needed) shipPosBuf = new Float32Array(needed)
-  for (let i = 0; i < features.length; i++) {
-    const coords = (features[i].geometry as GeoJSON.Point).coordinates
-    shipPosBuf[i * 2] = coords[0]
-    shipPosBuf[i * 2 + 1] = coords[1]
-  }
-  return shipPosBuf.subarray(0, needed)
-}
-
 export function buildShipsLayer(data: GeoJSON.Feature[]): IconLayer {
-  const positions = ensureShipPositions(data)
   return new IconLayer({
     id: 'ships',
     data,
-    getPosition: (_d: GeoJSON.Feature, { index }: { index: number }) =>
-      [positions[index * 2], positions[index * 2 + 1]] as [number, number],
+    getPosition: (d: GeoJSON.Feature) => (d.geometry as GeoJSON.Point).coordinates as [number, number],
     getIcon: (d: GeoJSON.Feature) => iconForCategory(shipCategory(d.properties?.ship_type)),
     getSize: (d: GeoJSON.Feature) => sizeForCategory(shipCategory(d.properties?.ship_type)),
     getAngle: (d: GeoJSON.Feature) => {

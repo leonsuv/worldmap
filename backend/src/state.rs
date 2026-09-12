@@ -13,6 +13,8 @@ pub struct AppState {
     pub aton_store: AtoNStore,
     pub sar_store: SarStore,
     pub http_client: reqwest::Client,
+    pub airports_body: crate::routes::static_data::StaticBody,
+    pub seaports_body: crate::routes::static_data::StaticBody,
     pub airports_geojson: serde_json::Value,
     pub seaports_geojson: serde_json::Value,
     /// OAuth2 client credentials (client_id, client_secret)

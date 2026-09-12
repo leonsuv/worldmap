@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { apiRequest, reportFailure } from './notice'
 
 export interface AlertItem {
   id: number
@@ -30,38 +31,25 @@ export const useAlertStore = create<AlertState>((set, get) => ({
   toggle: () => set(s => ({ open: !s.open })),
   fetch: async () => {
     set({ loading: true })
-    try {
-      const r = await fetch('/api/alerts')
-      if (r.ok) {
-        const data = await r.json()
-        set({ alerts: data })
-      }
-    } finally {
-      set({ loading: false })
-    }
-    get().fetchCount()
+    await reportFailure(async () => set({ alerts: await apiRequest<AlertItem[]>('/api/alerts') }))
+    set({ loading: false })
+    await get().fetchCount()
   },
   fetchCount: async () => {
-    try {
-      const r = await fetch('/api/alerts/count')
-      if (r.ok) {
-        const data = await r.json()
-        set({ count: data.count })
-      }
-    } catch { /* ignore */ }
+    if (document.hidden) return
+    try { const data = await apiRequest<{ count: number }>('/api/alerts/count'); set({ count: data.count }) } catch { /* Retry with next poll. */ }
   },
   ack: async (id) => {
-    await fetch(`/api/alerts/${id}/ack`, { method: 'POST' })
-    set(s => ({
-      alerts: s.alerts.map(a => a.id === id ? { ...a, acknowledged: true } : a),
-      count: Math.max(0, s.count - 1),
-    }))
+    await reportFailure(async () => {
+      await apiRequest(`/api/alerts/${id}/ack`, { method: 'POST' })
+      set(s => ({ alerts: s.alerts.map(a => a.id === id ? { ...a, acknowledged: true } : a) }))
+      await get().fetchCount()
+    })
   },
   ackAll: async () => {
-    await fetch('/api/alerts/ack-all', { method: 'POST' })
-    set(s => ({
-      alerts: s.alerts.map(a => ({ ...a, acknowledged: true })),
-      count: 0,
-    }))
+    await reportFailure(async () => {
+      await apiRequest('/api/alerts/ack-all', { method: 'POST' })
+      set(s => ({ alerts: s.alerts.map(a => ({ ...a, acknowledged: true })), count: 0 }))
+    })
   },
 }))

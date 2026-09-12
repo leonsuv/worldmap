@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { apiRequest, reportFailure } from './notice'
 
 export interface EventItem {
   id: number
@@ -29,7 +30,7 @@ interface EventState {
   loading: boolean
   toggle: () => void
   fetch: () => Promise<void>
-  create: (e: Omit<EventItem, 'id' | 'started_at' | 'ended_at' | 'active'>) => Promise<void>
+  create: (e: Omit<EventItem, 'id' | 'started_at' | 'ended_at' | 'active'>) => Promise<boolean>
   close: (id: number) => Promise<void>
   remove: (id: number) => Promise<void>
   select: (id: number | null) => void
@@ -45,37 +46,27 @@ export const useEventStore = create<EventState>((set, get) => ({
   toggle: () => set(s => ({ open: !s.open })),
   fetch: async () => {
     set({ loading: true })
-    try {
-      const r = await fetch('/api/events')
-      if (r.ok) set({ events: await r.json() })
-    } finally {
-      set({ loading: false })
-    }
+    await reportFailure(async () => set({ events: await apiRequest<EventItem[]>('/api/events') }))
+    set({ loading: false })
   },
-  create: async (e) => {
-    const r = await fetch('/api/events', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(e),
-    })
-    if (r.ok) get().fetch()
-  },
+  create: async (event) => reportFailure(async () => {
+    await apiRequest('/api/events', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(event) })
+    await get().fetch()
+  }),
   close: async (id) => {
-    await fetch(`/api/events/${id}/close`, { method: 'POST' })
-    get().fetch()
+    await reportFailure(async () => { await apiRequest(`/api/events/${id}/close`, { method: 'POST' }); await get().fetch() })
   },
   remove: async (id) => {
-    await fetch(`/api/events/${id}`, { method: 'DELETE' })
-    set(s => ({ events: s.events.filter(e => e.id !== id), selectedId: s.selectedId === id ? null : s.selectedId, affected: s.selectedId === id ? null : s.affected }))
+    await reportFailure(async () => {
+      await apiRequest(`/api/events/${id}`, { method: 'DELETE' })
+      set(s => ({ events: s.events.filter(e => e.id !== id), selectedId: s.selectedId === id ? null : s.selectedId, affected: s.selectedId === id ? null : s.affected }))
+    })
   },
-  select: (id) => {
-    set({ selectedId: id, affected: null })
-    if (id) get().fetchAffected(id)
-  },
+  select: (id) => { set({ selectedId: id, affected: null }); if (id !== null) void get().fetchAffected(id) },
   fetchAffected: async (id) => {
-    try {
-      const r = await fetch(`/api/events/affected?event_id=${id}`)
-      if (r.ok) set({ affected: await r.json() })
-    } catch { /* ignore */ }
+    await reportFailure(async () => {
+      const affected = await apiRequest<AffectedAssets>(`/api/events/affected?event_id=${id}`)
+      if (get().selectedId === id) set({ affected })
+    })
   },
 }))

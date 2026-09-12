@@ -1,4 +1,5 @@
 import { memo, useState, useEffect } from 'react'
+import { useNoticeStore } from '../store/notice'
 import { useEventStore } from '../store/events'
 import { AlertTriangle, Plus, X, Eye, Trash2, XCircle } from 'lucide-react'
 
@@ -20,9 +21,11 @@ function EventPanel() {
 
   if (!open) return null
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
     if (!form.name || !form.lat || !form.lon) return
-    create({
+    const lat = Number(form.lat), lon = Number(form.lon), radius = Number(form.radius_km)
+    if (![lat, lon, radius].every(Number.isFinite) || Math.abs(lat) > 90 || Math.abs(lon) > 180 || radius <= 0 || radius > 20000) { useNoticeStore.getState().show('Enter valid coordinates and a radius between 0 and 20,000 km.'); return }
+    const saved = await create({
       name: form.name,
       event_type: form.event_type,
       lat: parseFloat(form.lat),
@@ -30,6 +33,7 @@ function EventPanel() {
       radius_km: parseFloat(form.radius_km) || 50,
       description: form.description,
     })
+    if (!saved) return
     setForm({ name: '', event_type: 'storm', lat: '', lon: '', radius_km: '50', description: '' })
     setAdding(false)
   }
@@ -38,7 +42,7 @@ function EventPanel() {
 
   return (
     <div className="ev-panel">
-      <button className="ev-close" onClick={toggle}><X size={16} /></button>
+      <button aria-label="Close panel" className="ev-close" onClick={toggle}><X size={16} /></button>
       <div className="ev-header">
         <AlertTriangle size={18} />
         <h2 className="ev-title">Events</h2>

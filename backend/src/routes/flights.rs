@@ -14,6 +14,7 @@ const TOKEN_REFRESH_MARGIN: i64 = 60;
 
 /// Progressive backoff: doubles each time we get 429, resets on success.
 static COOLDOWN_UNTIL: AtomicI64 = AtomicI64::new(0);
+static STATES_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static BACKOFF_SECS: AtomicI64 = AtomicI64::new(60);
 
 // ─── OAuth2 token management ───
@@ -22,13 +23,9 @@ async fn get_opensky_token(state: &Arc<AppState>) -> Option<String> {
     let (client_id, client_secret) = state.opensky_creds.as_ref()?;
     let now = chrono::Utc::now().timestamp();
 
-    {
-        let guard = state.opensky_token.lock().await;
-        if let Some((ref token, expires_at)) = *guard {
-            if now < expires_at - TOKEN_REFRESH_MARGIN {
-                return Some(token.clone());
-            }
-        }
+    let mut guard = state.opensky_token.lock().await;
+    if let Some((ref token, expires_at)) = *guard {
+        if now < expires_at - TOKEN_REFRESH_MARGIN { return Some(token.clone()); }
     }
 
     let resp = state
@@ -55,7 +52,6 @@ async fn get_opensky_token(state: &Arc<AppState>) -> Option<String> {
 
     tracing::info!("OpenSky token refreshed (expires in {expires_in}s)");
 
-    let mut guard = state.opensky_token.lock().await;
     *guard = Some((token.clone(), expires_at));
     Some(token)
 }
@@ -182,9 +178,15 @@ async fn serve_stale_or_empty(
         Err(_) => None,
     };
     if let Some(stale) = stale {
-        let v: serde_json::Value = serde_json::from_str(&stale)
+        let mut v: serde_json::Value = serde_json::from_str(&stale)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+        if v.get("type").and_then(|value| value.as_str()) == Some("FeatureCollection") {
+            v["stale"] = serde_json::json!(true);
+        }
         return Ok(Json(v));
+    }
+    if cache_key == "opensky:states" {
+        return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
     }
     Ok(Json(serde_json::json!([])))
 }
@@ -194,6 +196,7 @@ async fn serve_stale_or_empty(
 pub async fn get_flights(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult {
+    let _guard = STATES_GATE.lock().await;
     const CACHE_KEY: &str = "opensky:states";
     const CACHE_TTL: i64 = 15;
 

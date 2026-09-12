@@ -21,9 +21,11 @@ export default defineConfig({
     chunkSizeWarningLimit: 1000,
     rollupOptions: {
       output: {
-        manualChunks: {
-          'maplibre': ['maplibre-gl'],
-          'deckgl': ['@deck.gl/core', '@deck.gl/layers', '@deck.gl/geo-layers', '@deck.gl/mapbox'],
+        manualChunks(id) {
+          // Shared bundler helpers must not make the UI eagerly load the map engine.
+          if (id.includes('commonjsHelpers') || id.includes('vite/preload-helper')) return 'runtime'
+          if (id.includes('/node_modules/maplibre-gl/')) return 'maplibre'
+          if (/\/node_modules\/@(?:deck|luma|loaders|math)\.gl\//.test(id)) return 'deckgl'
         },
       },
     },

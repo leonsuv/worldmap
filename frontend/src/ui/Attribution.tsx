@@ -22,7 +22,7 @@ function Attribution() {
     .map(([, v]) => v)
 
   // Always credit the basemap
-  const sources = ['OpenFreeMap', ...new Set(active)]
+  const sources = [...new Set(active)]
 
   return (
     <div className="attribution">

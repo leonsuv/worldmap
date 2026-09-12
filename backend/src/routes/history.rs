@@ -22,11 +22,11 @@ pub struct HistoryPoint {
     pub mmsi: i64,
     pub lat: f64,
     pub lon: f64,
-    pub course: f64,
-    pub speed: f64,
-    pub heading: f64,
+    pub course: Option<f64>,
+    pub speed: Option<f64>,
+    pub heading: Option<f64>,
     pub ship_name: String,
-    pub ship_type: i64,
+    pub ship_type: Option<i64>,
     pub recorded_at: i64,
 }
 
@@ -42,19 +42,7 @@ pub async fn get_ship_history(
                  FROM ship_history WHERE recorded_at BETWEEN ?1 AND ?2 AND mmsi = ?3 \
                  ORDER BY recorded_at"
             )?;
-            let result = stmt.query_map(rusqlite::params![q.from, q.to, mmsi], |row| {
-                Ok(HistoryPoint {
-                    mmsi: row.get(0)?,
-                    lat: row.get(1)?,
-                    lon: row.get(2)?,
-                    course: row.get(3)?,
-                    speed: row.get(4)?,
-                    heading: row.get(5)?,
-                    ship_name: row.get(6)?,
-                    ship_type: row.get(7)?,
-                    recorded_at: row.get(8)?,
-                })
-            })?.filter_map(|r| r.ok()).collect();
+            let result = stmt.query_map(rusqlite::params![q.from, q.to, mmsi], history_point)?.filter_map(|r| r.ok()).collect();
             result
         } else {
             let mut stmt = conn.prepare(
@@ -62,19 +50,7 @@ pub async fn get_ship_history(
                  FROM ship_history WHERE recorded_at BETWEEN ?1 AND ?2 \
                  ORDER BY recorded_at LIMIT 50000"
             )?;
-            let result = stmt.query_map(rusqlite::params![q.from, q.to], |row| {
-                Ok(HistoryPoint {
-                    mmsi: row.get(0)?,
-                    lat: row.get(1)?,
-                    lon: row.get(2)?,
-                    course: row.get(3)?,
-                    speed: row.get(4)?,
-                    heading: row.get(5)?,
-                    ship_name: row.get(6)?,
-                    ship_type: row.get(7)?,
-                    recorded_at: row.get(8)?,
-                })
-            })?.filter_map(|r| r.ok()).collect();
+            let result = stmt.query_map(rusqlite::params![q.from, q.to], history_point)?.filter_map(|r| r.ok()).collect();
             result
         };
         Ok(rows)
@@ -106,4 +82,22 @@ pub async fn get_history_timestamps(
         Ok(HistoryTimestamps { timestamps: ts, total_snapshots: total })
     }).await.unwrap_or(HistoryTimestamps { timestamps: vec![], total_snapshots: 0 });
     Json(result)
+}
+
+fn history_point(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryPoint> {
+    Ok(HistoryPoint { mmsi: row.get(0)?, lat: row.get(1)?, lon: row.get(2)?, course: row.get(3)?, speed: row.get(4)?, heading: row.get(5)?, ship_name: row.get(6)?, ship_type: row.get(7)?, recorded_at: row.get(8)? })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn api_rows_keep_null_ais_values() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let point = conn.query_row("SELECT 123, 52.0, 13.0, NULL, NULL, NULL, 'Vessel', NULL, 300", [], history_point).unwrap();
+        let json = serde_json::to_value(point).unwrap();
+        assert_eq!(json["mmsi"], 123);
+        assert!(json["course"].is_null());
+        assert!(json["ship_type"].is_null());
+    }
 }

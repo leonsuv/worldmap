@@ -38,7 +38,7 @@ pub async fn list_watchlist(
                     id: row.get(0)?,
                     wtype: row.get(1)?,
                     name: row.get(2)?,
-                    params: serde_json::from_str(&params_str).unwrap_or(serde_json::Value::Null),
+                    params: parse_params(&params_str),
                     created_at: row.get(4)?,
                 })
             })?
@@ -82,4 +82,23 @@ pub async fn delete_watchlist_item(
         Ok(conn.execute("DELETE FROM watchlist WHERE id = ?1", rusqlite::params![id]).unwrap_or(0))
     }).await.unwrap_or(0);
     if changed > 0 { StatusCode::NO_CONTENT } else { StatusCode::NOT_FOUND }
+}
+
+pub fn parse_params(raw: &str) -> serde_json::Value {
+    let value = serde_json::from_str(raw).unwrap_or(serde_json::Value::Null);
+    if let serde_json::Value::String(encoded) = value {
+        serde_json::from_str(&encoded).unwrap_or(serde_json::Value::Null)
+    } else { value }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn reads_legacy_and_object_watchlist_parameters() {
+        let object = serde_json::json!({"mmsi": 123});
+        assert_eq!(parse_params(&object.to_string()), object);
+        assert_eq!(parse_params(&serde_json::to_string(&object.to_string()).unwrap()), object);
+        assert!(parse_params("invalid").is_null());
+    }
 }

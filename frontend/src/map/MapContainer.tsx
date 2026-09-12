@@ -1,13 +1,16 @@
 import { useEffect, useRef } from 'react'
-import maplibregl from 'maplibre-gl'
+import * as maplibregl from 'maplibre-gl'
+import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import { MapboxOverlay } from '@deck.gl/mapbox'
+import { MapLibreOverlay } from '@deck.gl/maplibre'
+import { MAP_STYLES, styleAtlas } from './styles'
+import { setMapRuntime } from './runtime'
 import { useViewportStore } from '../store/viewport'
+
+maplibregl.setWorkerUrl(workerUrl)
 
 let debounceTimer: ReturnType<typeof setTimeout> | undefined
 
-export let mapInstance: maplibregl.Map | null = null
-export let deckOverlay: MapboxOverlay | null = null
 
 export default function MapContainer() {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -18,19 +21,21 @@ export default function MapContainer() {
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: 'https://tiles.openfreemap.org/styles/liberty',
+      style: MAP_STYLES.dark,
       center: [0, 20],
       zoom: 2,
       hash: true,
+      pixelRatio: Math.min(window.devicePixelRatio, 2),
+      maxPitch: 65,
+      attributionControl: { compact: true },
     })
 
-    mapInstance = map
 
-    const overlay = new MapboxOverlay({ interleaved: true, layers: [] })
+    const overlay = new MapLibreOverlay({ interleaved: true, layers: [] })
     map.addControl(overlay as unknown as maplibregl.IControl)
-    deckOverlay = overlay
+    setMapRuntime(map, overlay)
 
-    map.addControl(new maplibregl.NavigationControl(), 'top-right')
+    map.addControl(new maplibregl.ScaleControl({ maxWidth: 100 }), 'bottom-left')
 
     const updateViewport = () => {
       clearTimeout(debounceTimer)
@@ -49,16 +54,16 @@ export default function MapContainer() {
       }, 200)
     }
 
+    map.on('style.load', () => styleAtlas(map))
     map.on('moveend', updateViewport)
     map.once('load', updateViewport)
 
     return () => {
       clearTimeout(debounceTimer)
       map.remove()
-      mapInstance = null
-      deckOverlay = null
+      setMapRuntime(null, null)
     }
   }, [setViewport])
 
-  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+  return <div className="map-canvas" ref={containerRef} />
 }

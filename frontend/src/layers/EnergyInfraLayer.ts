@@ -1,4 +1,4 @@
-import type maplibregl from 'maplibre-gl'
+import type * as maplibregl from 'maplibre-gl'
 
 const SOURCE_ID = 'energy-infra-src'
 const SOLAR_LAYER = 'solar'

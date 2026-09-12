@@ -1,4 +1,4 @@
-import type maplibregl from 'maplibre-gl'
+import type * as maplibregl from 'maplibre-gl'
 
 const LAYER_ID = 'buildings-3d'
 
@@ -10,7 +10,8 @@ export function syncBuildings3DLayer(map: maplibregl.Map, enabled: boolean, zoom
     return
   }
 
-  if (!shouldShow) return
+  const source = map.getSource('openmaptiles') ? 'openmaptiles' : map.getSource('carto') ? 'carto' : null
+  if (!shouldShow || !source) return
 
   // The OpenFreeMap Liberty style includes an "openmaptiles" source with a "building" layer
   // Try to add fill-extrusion on top of it
@@ -18,7 +19,7 @@ export function syncBuildings3DLayer(map: maplibregl.Map, enabled: boolean, zoom
     map.addLayer({
       id: LAYER_ID,
       type: 'fill-extrusion',
-      source: 'openmaptiles',
+      source,
       'source-layer': 'building',
       minzoom: 14,
       paint: {

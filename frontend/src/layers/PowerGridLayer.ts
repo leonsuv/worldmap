@@ -1,4 +1,4 @@
-import type maplibregl from 'maplibre-gl'
+import type * as maplibregl from 'maplibre-gl'
 
 const GRID_SOURCE = 'power-grid-src'
 const GRID_LAYER = 'power-grid-line'
@@ -11,7 +11,7 @@ export function syncPowerGridLayer(
   hvVisible: boolean,
 ) {
   // ── Gridfinder predicted grid (global coverage) ──
-  if (!map.getSource(GRID_SOURCE)) {
+  if (gridVisible && !map.getSource(GRID_SOURCE)) {
     try {
       map.addSource(GRID_SOURCE, {
         type: 'vector',
@@ -38,7 +38,7 @@ export function syncPowerGridLayer(
   }
 
   // ── OSM verified high-voltage lines ──
-  if (!map.getSource(HV_SOURCE)) {
+  if (hvVisible && !map.getSource(HV_SOURCE)) {
     try {
       map.addSource(HV_SOURCE, {
         type: 'vector',
@@ -69,6 +69,6 @@ export function syncPowerGridLayer(
     }
   }
 
-  try { map.setLayoutProperty(GRID_LAYER, 'visibility', gridVisible ? 'visible' : 'none') } catch { /* */ }
-  try { map.setLayoutProperty(HV_LAYER, 'visibility', hvVisible ? 'visible' : 'none') } catch { /* */ }
+  try { if (map.getLayer(GRID_LAYER)) map.setLayoutProperty(GRID_LAYER, 'visibility', gridVisible ? 'visible' : 'none') } catch { /* */ }
+  try { if (map.getLayer(HV_LAYER)) map.setLayoutProperty(HV_LAYER, 'visibility', hvVisible ? 'visible' : 'none') } catch { /* */ }
 }
