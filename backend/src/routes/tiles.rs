@@ -121,8 +121,9 @@ pub async fn get_tile(
         None => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    // MBTiles uses TMS Y flipping
-    let tms_y = (1u32 << z) - 1 - y;
+    let Some(tms_y) = tms_row(z, x, y) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
 
     let result: Result<Vec<u8>, _> = tokio::task::spawn_blocking(move || {
         let conn = conn.lock().unwrap();
@@ -143,7 +144,9 @@ pub async fn get_tile(
                 "application/x-protobuf".parse().unwrap(),
             );
             // MBTiles store gzip-compressed protobuf data
-            headers.insert(header::CONTENT_ENCODING, "gzip".parse().unwrap());
+            if tile_data.starts_with(&[0x1f, 0x8b]) {
+                headers.insert(header::CONTENT_ENCODING, "gzip".parse().unwrap());
+            }
             headers.insert(
                 header::CACHE_CONTROL,
                 "public, max-age=86400".parse().unwrap(),
@@ -153,5 +156,26 @@ pub async fn get_tile(
         // Return 204 for missing tiles — MapLibre treats 404 as errors,
         // but 204 means "no data for this tile" and is handled gracefully.
         Err(_) => StatusCode::NO_CONTENT.into_response(),
+    }
+}
+
+fn tms_row(z: u32, x: u32, y: u32) -> Option<u32> {
+    let size = 1u32.checked_shl(z)?;
+    if x >= size || y >= size { return None; }
+    Some(size - 1 - y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn tile_coordinates_are_validated_before_flipping() {
+        assert_eq!(tms_row(0, 0, 0), Some(0));
+        assert_eq!(tms_row(3, 5, 0), Some(7));
+        assert_eq!(tms_row(3, 5, 7), Some(0));
+        assert_eq!(tms_row(3, 8, 0), None);
+        assert_eq!(tms_row(3, 0, 8), None);
+        assert_eq!(tms_row(32, 0, 0), None);
+        assert_eq!(tms_row(u32::MAX, 0, 0), None);
     }
 }

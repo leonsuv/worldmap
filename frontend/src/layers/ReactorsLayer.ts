@@ -9,13 +9,13 @@ export function buildReactorsLayer(fc: GeoJSON.FeatureCollection): ScatterplotLa
       const mw = d.properties?.capacity_mw ?? 500
       return Math.max(3000, Math.sqrt(mw) * 500)
     },
-    getFillColor: [255, 220, 50, 200],
-    getLineColor: [255, 180, 0, 255],
+    getFillColor: [222, 214, 139, 205],
+    getLineColor: [255, 242, 193, 255],
     lineWidthMinPixels: 1,
     stroked: true,
     radiusUnits: 'meters',
-    radiusMinPixels: 4,
-    radiusMaxPixels: 30,
+    radiusMinPixels: 3,
+    radiusMaxPixels: 12,
     pickable: true,
   })
 }

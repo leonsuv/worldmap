@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tower_http::{
     cors::CorsLayer,
+    compression::CompressionLayer,
     services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
@@ -68,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Spawn AIS WebSocket fanout (only if API key is set)
-    if let Ok(ais_key) = std::env::var("AISSTREAM_API_KEY") {
+    if let Some(ais_key) = std::env::var("AISSTREAM_API_KEY").ok().filter(|key| !key.trim().is_empty()) {
         ws_fanout::spawn_ais_fanout(
             ais_key, ship_tx.clone(), ship_store.clone(),
             aton_store.clone(), sar_store.clone(),
@@ -85,6 +86,8 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                let cutoff = chrono::Utc::now().timestamp() - 1800;
+                store.retain(|_, ship| ship.timestamp >= cutoff);
                 let batch: Vec<_> = store.iter().map(|e| {
                     let s = e.value();
                     (s.mmsi, s.lat, s.lon, s.course, s.speed, s.heading,
@@ -116,6 +119,8 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(300)).await;
                 let now = chrono::Utc::now().timestamp();
+                let cutoff = chrono::Utc::now().timestamp() - 1800;
+                store.retain(|_, ship| ship.timestamp >= cutoff);
                 let batch: Vec<_> = store.iter().map(|e| {
                     let s = e.value();
                     (s.mmsi, s.lat, s.lon,
@@ -181,6 +186,8 @@ async fn main() -> anyhow::Result<()> {
         aton_store,
         sar_store,
         http_client,
+        airports_body: routes::static_data::StaticBody::new(&airports_geojson)?,
+        seaports_body: routes::static_data::StaticBody::new(&seaports_geojson)?,
         airports_geojson,
         seaports_geojson,
         opensky_creds,
@@ -193,9 +200,11 @@ async fn main() -> anyhow::Result<()> {
         .not_found_service(ServeFile::new(format!("{frontend_dir}/index.html")));
 
     let app = Router::new()
-        // Tile routes — no CompressionLayer; tiles are pre-compressed gzip in MBTiles
+        // Pre-compressed tiles retain their Content-Encoding through CompressionLayer.
         .route("/tiles/{source}/tilejson.json", get(routes::tiles::tilejson))
         .route("/tiles/{source}/{z}/{x}/{y}", get(routes::tiles::get_tile))
+        .route("/api/search", get(routes::search::search))
+        .route("/api/status", get(routes::search::status))
         // API routes with compression
         .route("/api/flights", get(routes::flights::get_flights))
         .route("/api/flights/track", get(routes::flights::get_track))
@@ -234,6 +243,7 @@ async fn main() -> anyhow::Result<()> {
         .with_state(state)
         // Middleware
         .layer(TraceLayer::new_for_http())
+        .layer(CompressionLayer::new())
         .layer(CorsLayer::permissive())
         // SPA fallback
         .fallback_service(spa_service);

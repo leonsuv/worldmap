@@ -1,4 +1,4 @@
-use axum::{extract::State, Json};
+use axum::{extract::State, http::header, response::IntoResponse};
 use rusqlite::Connection;
 use std::sync::Arc;
 
@@ -68,14 +68,89 @@ pub fn load_seaports(conn: &Connection) -> serde_json::Value {
     })
 }
 
+/// Serialize and compress immutable datasets once, rather than per request.
+pub struct StaticBody {
+    identity: axum::body::Bytes,
+    gzip: axum::body::Bytes,
+}
+
+impl StaticBody {
+    pub fn new(value: &serde_json::Value) -> anyhow::Result<Self> {
+        use std::io::Write;
+        let identity = serde_json::to_vec(value)?;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&identity)?;
+        Ok(Self { identity: identity.into(), gzip: encoder.finish()?.into() })
+    }
+
+    fn response(&self, headers: &axum::http::HeaderMap) -> axum::response::Response {
+        let gzip = accepts_gzip(headers);
+        (
+            [
+                (header::CONTENT_TYPE, "application/geo+json"),
+                (header::CACHE_CONTROL, "public, max-age=3600"),
+                (header::VARY, "Accept-Encoding"),
+                (header::CONTENT_ENCODING, if gzip { "gzip" } else { "identity" }),
+            ],
+            if gzip { self.gzip.clone() } else { self.identity.clone() },
+        ).into_response()
+    }
+}
+
+fn accepts_gzip(headers: &axum::http::HeaderMap) -> bool {
+    let mut wildcard = false;
+    for value in headers.get_all(header::ACCEPT_ENCODING) {
+        let Ok(value) = value.to_str() else { continue };
+        for encoding in value.split(',') {
+            let mut parts = encoding.trim().split(';');
+            let name = parts.next().unwrap_or("").trim();
+            let mut quality = 1.0_f32;
+            for param in parts {
+                if let Some((key, value)) = param.trim().split_once('=') {
+                    if key.trim().eq_ignore_ascii_case("q") {
+                        quality = value.trim().parse().unwrap_or(0.0);
+                    }
+                }
+            }
+            if name.eq_ignore_ascii_case("gzip") { return quality > 0.0; }
+            if name == "*" { wildcard = quality > 0.0; }
+        }
+    }
+    wildcard
+}
+
 pub async fn get_airports(
     State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
-    Json(state.airports_geojson.clone())
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    state.airports_body.response(&headers)
 }
 
 pub async fn get_seaports(
     State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
-    Json(state.seaports_geojson.clone())
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    state.seaports_body.response(&headers)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn gzip_negotiation_honors_disabled_and_wildcard_encodings() {
+        for (value, expected) in [("gzip, deflate, br", true), ("gzip;q=0, *;q=1", false), ("br", false), ("*;q=0.5", true), ("gzip;q=0.2", true)] {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(header::ACCEPT_ENCODING, value.parse().unwrap());
+            assert_eq!(accepts_gzip(&headers), expected, "{value}");
+        }
+        assert!(!accepts_gzip(&axum::http::HeaderMap::new()));
+    }
+    #[test]
+    fn precompressed_dataset_round_trips() {
+        use std::io::Read;
+        let body = StaticBody::new(&serde_json::json!({ "features": [1, 2, 3] })).unwrap();
+        let mut decoded = Vec::new();
+        flate2::read::GzDecoder::new(body.gzip.as_ref()).read_to_end(&mut decoded).unwrap();
+        assert_eq!(decoded.as_slice(), body.identity.as_ref());
+    }
 }

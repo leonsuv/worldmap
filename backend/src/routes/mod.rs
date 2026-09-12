@@ -10,3 +10,5 @@ pub mod tiles;
 pub mod traffic;
 pub mod watchlist;
 pub mod weather;
+
+pub mod search;

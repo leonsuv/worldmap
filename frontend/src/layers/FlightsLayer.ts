@@ -12,27 +12,11 @@ function altitudeColor(alt: number | null): [number, number, number, number] {
   return [r, g, 0, 220]
 }
 
-// Reusable typed-array buffer — avoids GC pressure on every render frame
-let posBuf = new Float32Array(0)
-
-function ensurePositions(features: GeoJSON.Feature[]): Float32Array {
-  const needed = features.length * 2
-  if (posBuf.length < needed) posBuf = new Float32Array(needed)
-  for (let i = 0; i < features.length; i++) {
-    const coords = (features[i].geometry as GeoJSON.Point).coordinates
-    posBuf[i * 2] = coords[0]
-    posBuf[i * 2 + 1] = coords[1]
-  }
-  return posBuf.subarray(0, needed)
-}
-
 export function buildFlightsLayer(fc: GeoJSON.FeatureCollection): IconLayer {
-  const positions = ensurePositions(fc.features)
   return new IconLayer({
     id: 'flights',
     data: fc.features,
-    getPosition: (_d: GeoJSON.Feature, { index }: { index: number }) =>
-      [positions[index * 2], positions[index * 2 + 1]] as [number, number],
+    getPosition: (d: GeoJSON.Feature) => (d.geometry as GeoJSON.Point).coordinates as [number, number],
     getIcon: () => 'airplane',
     getSize: 20,
     getAngle: (d: GeoJSON.Feature) => -(d.properties?.true_track ?? 0),

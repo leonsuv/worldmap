@@ -1,4 +1,5 @@
 import { memo, useState } from 'react'
+import { useNoticeStore } from '../store/notice'
 import { Download, FileText, FileSpreadsheet } from 'lucide-react'
 
 function ExportMenu() {
@@ -14,7 +15,7 @@ function ExportMenu() {
     setGenerating(true)
     try {
       const r = await fetch('/api/export/report')
-      if (!r.ok) return
+      if (!r.ok) throw new Error('Report unavailable. Please try again.')
       const report = await r.json()
       // Generate a text-based situation report
       const lines = [
@@ -45,6 +46,8 @@ function ExportMenu() {
       a.download = `situation-report-${new Date().toISOString().slice(0, 10)}.txt`
       a.click()
       URL.revokeObjectURL(url)
+    } catch {
+      useNoticeStore.getState().show('Report could not be downloaded. Please check the connection.')
     } finally {
       setGenerating(false)
       setOpen(false)

@@ -59,7 +59,7 @@ function FlightDetailPanel() {
 
   return (
     <div className="fpd-panel">
-      <button className="fpd-close" onClick={close}><X size={16} /></button>
+      <button aria-label="Close panel" className="fpd-close" onClick={close}><X size={16} /></button>
 
       <div className="fpd-header">
         <Plane size={18} />

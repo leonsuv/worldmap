@@ -1,5 +1,6 @@
-import MapContainer from './map/MapContainer'
-import { useLayers } from './layers/useLayers'
+import { lazy, Suspense } from 'react'
+import MapErrorBoundary from './ui/MapErrorBoundary'
+const MapExperience = lazy(() => import('./map/MapExperience'))
 import LayerPanel from './ui/LayerPanel'
 import InfoPopup from './ui/InfoPopup'
 import FlightDetailPanel from './ui/FlightDetailPanel'
@@ -14,13 +15,17 @@ import TimeSlider from './ui/TimeSlider'
 import ExportMenu from './ui/ExportMenu'
 import BusinessToolbar from './ui/BusinessToolbar'
 import WeatherLegend from './ui/WeatherLegend'
+import DataLegend from './ui/DataLegend'
+import Notice from './ui/Notice'
+import MapHeader from './ui/MapHeader'
 import './App.css'
+import './atlas.css'
 
 function App() {
-  useLayers()
   return (
     <div className="app">
-      <MapContainer />
+      <MapErrorBoundary><Suspense fallback={<div className="map-notice" role="status">Preparing your world…</div>}><MapExperience /></Suspense></MapErrorBoundary>
+      <MapHeader />
       <Search />
       <LayerPanel />
       <BusinessToolbar />
@@ -32,9 +37,11 @@ function App() {
       <EventPanel />
       <AlertPanel />
       <WeatherLegend />
+      <DataLegend />
       <TimeSlider />
       <ExportMenu />
       <Attribution />
+      <Notice />
     </div>
   )
 }

@@ -67,7 +67,7 @@ function ShipDetailPanel() {
 
   return (
     <div className="spd-panel">
-      <button className="spd-close" onClick={close}><X size={16} /></button>
+      <button aria-label="Close panel" className="spd-close" onClick={close}><X size={16} /></button>
 
       <div className="spd-header">
         <Ship size={18} />

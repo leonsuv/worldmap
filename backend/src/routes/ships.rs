@@ -93,7 +93,7 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
             }
             msg = socket.recv() => {
                 match msg {
-                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
                     _ => {}
                 }
             }
@@ -125,6 +125,7 @@ pub async fn snapshot(
                 },
                 "properties": {
                     "mmsi": ship.mmsi,
+                    "timestamp": ship.timestamp,
                     "ship_name": ship.ship_name,
                     "ship_type": ship.ship_type,
                     "course": course,

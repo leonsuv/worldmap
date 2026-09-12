@@ -240,6 +240,7 @@ fn upsert_and_emit(
         "geometry": { "type": "Point", "coordinates": [lon, lat] },
         "properties": {
             "mmsi": mmsi,
+            "timestamp": chrono::Utc::now().timestamp(),
             "ship_name": ship_name,
             "ship_type": ship_type,
             "course": course,
@@ -509,6 +510,7 @@ fn handle_sar_report(msg: &serde_json::Value, sar_store: &SarStore) -> Option<St
         "geometry": { "type": "Point", "coordinates": [lon, lat] },
         "properties": {
             "mmsi": mmsi,
+            "timestamp": chrono::Utc::now().timestamp(),
             "sar": true,
             "altitude": altitude,
             "speed": speed,

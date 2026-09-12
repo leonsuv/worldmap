@@ -1,49 +1,14 @@
-import { memo, useEffect } from 'react'
+import { memo } from 'react'
 import { useHistoryStore } from '../store/history'
 import { History, X } from 'lucide-react'
-
 function TimeSlider() {
-  const { enabled, timestamps, currentTs, loading, toggle, fetchTimestamps, seek } = useHistoryStore()
-
-  useEffect(() => {
-    if (enabled && timestamps.length === 0) fetchTimestamps()
-  }, [enabled, timestamps.length, fetchTimestamps])
-
-  if (!enabled) {
-    return (
-      <button className="ts-toggle" onClick={toggle} title="Historical Replay">
-        <History size={16} />
-      </button>
-    )
-  }
-
-  const min = timestamps.length > 0 ? timestamps[0] : 0
-  const max = timestamps.length > 0 ? timestamps[timestamps.length - 1] : 0
-  const value = currentTs ?? max
-
-  const fmt = (ts: number) => {
-    if (!ts) return '—'
-    const d = new Date(ts * 1000)
-    return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-  }
-
-  return (
-    <div className="ts-bar">
-      <button className="ts-close" onClick={toggle}><X size={14} /></button>
-      <History size={14} />
-      <span className="ts-label">{loading ? 'Loading…' : fmt(value)}</span>
-      <input
-        type="range"
-        className="ts-slider"
-        min={min}
-        max={max}
-        step={300}
-        value={value}
-        onChange={e => seek(parseInt(e.target.value))}
-      />
-      <span className="ts-range">{fmt(min)} — {fmt(max)}</span>
-    </div>
-  )
+  const { enabled, timestamps, currentTs, loading, error, toggle, seek } = useHistoryStore()
+  if (!enabled) return <button className="ts-toggle" onClick={toggle} title="Historical replay" aria-label="Historical replay"><History size={17} /></button>
+  const fmt = (ts: number) => new Date(ts * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  return <div className="ts-bar">
+    <button className="ts-close" aria-label="Close historical replay" onClick={toggle}><X size={14} /></button><History size={14} />
+    <span className="ts-label" role="status">{error ?? (loading ? 'Loading snapshot…' : currentTs ? fmt(currentTs) : 'No recorded snapshots')}</span>
+    {timestamps.length > 0 && <><input type="range" aria-label="Historical snapshot" className="ts-slider" min={0} max={timestamps.length - 1} step={1} value={Math.max(0, timestamps.indexOf(currentTs ?? 0))} onChange={e => void seek(timestamps[Number(e.target.value)])} /><span className="ts-range">{fmt(timestamps[0])} — {fmt(timestamps[timestamps.length - 1])} · {timestamps.length} snapshots</span></>}
+  </div>
 }
-
 export default memo(TimeSlider)

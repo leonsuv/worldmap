@@ -82,7 +82,12 @@ pub async fn list_events(
 pub async fn create_event(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateEvent>,
-) -> (StatusCode, Json<Event>) {
+) -> Result<(StatusCode, Json<Event>), StatusCode> {
+    if body.name.trim().is_empty() || body.name.len() > 200 || !body.lat.is_finite() || !body.lon.is_finite()
+        || body.lat.abs() > 90.0 || body.lon.abs() > 180.0 || !body.radius_km.is_finite()
+        || body.radius_km <= 0.0 || body.radius_km > 20000.0 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let now = chrono::Utc::now().timestamp();
     let event_data = body;
     let id = state.cache_db.run(move |conn| {
@@ -110,15 +115,9 @@ pub async fn create_event(
             // Auto-generate alerts for watchlist items within the event radius
             generate_alerts_for_event(&state, &event);
 
-            (StatusCode::CREATED, Json(event))
+            Ok((StatusCode::CREATED, Json(event)))
         }
-        Err(_) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(Event {
-                id: 0, name: String::new(), event_type: String::new(),
-                lat: 0.0, lon: 0.0, radius_km: 0.0, description: String::new(),
-                started_at: now, ended_at: None, active: false,
-            }))
-        }
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
 
@@ -304,21 +303,22 @@ fn generate_alerts_for_event(state: &AppState, event: &Event) {
                 .collect();
 
             for (_id, wtype, name, params_str) in items {
-                let params: serde_json::Value = serde_json::from_str(&params_str).unwrap_or_default();
+                let params = super::watchlist::parse_params(&params_str);
                 let within = match wtype.as_str() {
                     "vessel" => {
                         if let Some(mmsi) = params.get("mmsi").and_then(|v| v.as_u64()) {
-                            ship_store.get(&mmsi).map_or(false, |s| {
+                            ship_store.get(&mmsi).is_some_and( |s| {
                                 haversine_km(event_lat, event_lon, s.lat, s.lon) <= event_radius_km
                             })
                         } else {
                             false
                         }
                     }
-                    "port" | "reactor" | "area" => {
-                        let plat = params.get("lat").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        let plon = params.get("lon").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        haversine_km(event_lat, event_lon, plat, plon) <= event_radius_km
+                    "port" | "reactor" | "area" | "pipeline" => {
+                        match (params.get("lat").and_then(|v| v.as_f64()), params.get("lon").and_then(|v| v.as_f64())) {
+                            (Some(plat), Some(plon)) => haversine_km(event_lat, event_lon, plat, plon) <= event_radius_km,
+                            _ => false,
+                        }
                     }
                     _ => false,
                 };
