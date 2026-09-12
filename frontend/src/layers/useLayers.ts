@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { createRenderScheduler, memoizeLayer } from './renderScheduler'
 import { weatherSamplePoints } from './weatherSampling'
 import { useDataStatus } from '../store/dataStatus'
+import { useSourceAvailability, sourceAvailable, SOURCE_REQUIREMENTS } from '../store/sourceAvailability'
 import { useLayerStore } from '../store/layers'
 import { useViewportStore } from '../store/viewport'
 import { usePopupStore } from '../store/popup'
@@ -235,23 +236,14 @@ export function useLayers() {
   const layers = useLayerStore()
   const viewport = useViewportStore()
   const openPopup = usePopupStore((s) => s.open)
-  const [availableTiles, setAvailableTiles] = useState<string[]>([])
+  const capabilities = useSourceAvailability(s => s.data)
+  const refreshSources = useSourceAvailability(s => s.refresh)
+  useEffect(() => { void refreshSources() }, [refreshSources])
   useEffect(() => {
-    const ac = new AbortController()
-    fetch('/api/status', { signal: ac.signal }).then(r => {
-      if (!r.ok) throw new Error('Backend unavailable')
-      return r.json()
-    }).then(data => {
-      if (ac.signal.aborted) return
-      setAvailableTiles(data.tiles)
-      for (const [key, source] of [['pipelines', 'pipelines'], ['powerGrid', 'power-grid'], ['hvLines', 'hv-lines']]) {
-        useDataStatus.getState().set(key, data.tiles.includes(source) ? { state: 'ready' } : { state: 'error', message: 'Local map data not installed' })
-      }
-    }).catch(() => {
-      if (!ac.signal.aborted) for (const key of ['pipelines', 'powerGrid', 'hvLines']) useDataStatus.getState().set(key, { state: 'error', message: 'Backend unavailable' })
-    })
-    return () => ac.abort()
-  }, [])
+    if (!capabilities) return
+    const disabled = Object.fromEntries(Object.keys(SOURCE_REQUIREMENTS).filter(key => !sourceAvailable(key, capabilities)).map(key => [key, false]))
+    useLayerStore.setState(disabled)
+  }, [capabilities])
 
   // Keep flags in sync for the RAF loop
   useEffect(() => {
@@ -318,7 +310,7 @@ export function useLayers() {
   const shipsMap = useRef<Map<number, GeoJSON.Feature>>(new Map())
 
   useEffect(() => {
-    if (!layers.ships) {
+    if (!layers.ships || !capabilities?.ships_configured) {
       stopShipsWs()
       shipsMap.current.clear()
       layerData.shipsArr = []
@@ -328,7 +320,7 @@ export function useLayers() {
       layerData.shipsArr = Array.from(shipsMap.current.values())
     })
     return stopShipsWs
-  }, [layers.ships])
+  }, [layers.ships, capabilities?.ships_configured])
 
   // ── Weather ──
   const weatherAbort = useRef<AbortController | null>(null)
@@ -437,7 +429,7 @@ export function useLayers() {
   const trafficAbort = useRef<AbortController | null>(null)
 
   useEffect(() => {
-    if (!layers.traffic || viewport.zoom < 10) {
+    if (!layers.traffic || !capabilities?.traffic_configured || viewport.zoom < 10) {
       trafficAbort.current?.abort()
       layerData.traffic = []
       return
@@ -447,13 +439,18 @@ export function useLayers() {
       const ac = new AbortController()
       trafficAbort.current = ac
       const [w, s, e, n] = viewport.bbox
+      useDataStatus.getState().set('traffic', { state: 'loading' })
       try {
         const r = await fetch(`/api/traffic?bbox=${w},${s},${e},${n}`, { signal: ac.signal })
         if (!r.ok) throw new Error('Traffic unavailable')
         const d = await r.json()
         if (ac.signal.aborted) return
         const seg = d.flowSegmentData
-        if (!seg?.coordinates?.coordinate) return
+        if (!seg?.coordinates?.coordinate?.length) {
+          layerData.traffic = []
+          useDataStatus.getState().set('traffic', { state: 'ready', count: 0, message: 'No traffic segment at this location' })
+          return
+        }
         const coords = seg.coordinates.coordinate.map((c: { latitude: number; longitude: number }) => [c.longitude, c.latitude] as [number, number])
         const ratio = seg.currentSpeed / Math.max(seg.freeFlowSpeed, 1)
         const color: [number, number, number] = ratio > 0.75 ? [0, 200, 0] : ratio > 0.5 ? [255, 200, 0] : ratio > 0.25 ? [255, 80, 0] : [200, 0, 0]
@@ -463,7 +460,7 @@ export function useLayers() {
     }
     const timer = setTimeout(fetchTraffic, 1000)
     return () => { clearTimeout(timer); trafficAbort.current?.abort() }
-  }, [layers.traffic, viewport.bbox, viewport.zoom])
+  }, [layers.traffic, viewport.bbox, viewport.zoom, capabilities?.traffic_configured])
 
   // ── Airports (fetch once) ──
   useEffect(() => {
@@ -493,7 +490,7 @@ export function useLayers() {
   const atonAbort = useRef<AbortController | null>(null)
 
   useEffect(() => {
-    if (!layers.aton) {
+    if (!layers.aton || !capabilities?.ships_configured) {
       atonAbort.current?.abort()
       layerData.aton = null
       return
@@ -515,22 +512,22 @@ export function useLayers() {
     fetchAton()
     const id = setInterval(fetchAton, 60_000)
     return () => { clearInterval(id); ac.abort() }
-  }, [layers.aton])
+  }, [layers.aton, capabilities?.ships_configured])
 
   // ── MapLibre native layers (pipelines, power grid, buildings) ──
   useEffect(() => {
     if (!mapInstance) return
     const map = mapInstance
     const onStyleLoad = () => {
-      syncPipelinesLayer(map, layers.pipelines && availableTiles.includes('pipelines'))
-      syncPowerGridLayer(map, layers.powerGrid && availableTiles.includes('power-grid'), layers.hvLines && availableTiles.includes('hv-lines'))
+      syncPipelinesLayer(map, layers.pipelines && !!capabilities?.tiles.includes('pipelines'))
+      syncPowerGridLayer(map, layers.powerGrid && !!capabilities?.tiles.includes('power-grid'), layers.hvLines && !!capabilities?.tiles.includes('hv-lines'))
       syncBuildings3DLayer(map, layers.buildings3d, viewport.zoom)
       scheduler.invalidate()
     }
     if (map.isStyleLoaded()) onStyleLoad()
     map.on('style.load', onStyleLoad)
     return () => { map.off('style.load', onStyleLoad) }
-  }, [layers.pipelines, layers.powerGrid, layers.hvLines, layers.buildings3d, viewport.zoom, availableTiles])
+  }, [layers.pipelines, layers.powerGrid, layers.hvLines, layers.buildings3d, viewport.zoom, capabilities])
 
   // ── Event radius circles (sync from event store) ──
   useEffect(() => {

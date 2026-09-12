@@ -194,3 +194,13 @@ button:disabled { opacity: .45; cursor: default; }
 .altitude-ramp { height: 4px; width: 90px; border-radius: 3px; background: linear-gradient(90deg,#00ff00,#ffff00,#ff0000); }
 .weather-swatch-1 { background: #75cbe2; } .weather-swatch-2 { background: #69a0f5; } .weather-swatch-3 { background: #f4cc68; } .weather-swatch-4 { background: #f5a058; } .weather-swatch-5 { background: #f37469; }
 @media(max-width:640px) { .data-legend { right: 12px; bottom: auto; top: 300px; min-width: 150px; max-width: 210px; padding: 10px; font-size: 8px; } }
+
+.layer-row.unavailable { cursor: not-allowed; background: transparent; }
+.layer-row.unavailable .layer-icon { opacity: .55; }
+.layer-toggle:disabled { cursor: not-allowed; opacity: .5; }
+.source-setup { padding: 10px 16px; border-top: 1px solid #ffffff0d; display: flex; flex-wrap: wrap; gap: 10px; flex-shrink: 0; }
+.source-setup > button { color: #b9caca; background: transparent; border: 0; font: inherit; font-size: 11px; cursor: pointer; padding: 3px 0; }
+.source-setup > button:last-of-type { margin-left: auto; color: var(--accent); }
+.source-setup > button:disabled { opacity: .5; cursor: wait; }
+.source-setup p { font-size: 11px; line-height: 1.6; color: #b7c5cc; margin: 8px 0; overflow-wrap: anywhere; }
+.source-setup-details { max-height: 220px; overflow-y: auto; width: 100%; }

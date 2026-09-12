@@ -68,7 +68,7 @@ Switch between the flat atlas and globe with the map controls.
 | High-voltage lines | Local OpenStreetMap vector tiles |
 | 3D buildings | Basemap building data at street scale |
 
-Unavailable feeds and missing local tiles are shown in the layer panel. Historical replay requires previously recorded ship snapshots. Coverage and freshness depend on the source.
+Layers with missing API keys or local tiles stay disabled and are excluded from presets. Open **Data source setup** for the exact setup steps, then restart the backend and select **Recheck**. Empty navigation-aid data is shown as waiting for AIS reports, rather than a failed feed. Historical replay requires previously recorded ship snapshots. Coverage and freshness depend on the source.
 
 ## Quick start
 
@@ -172,7 +172,7 @@ cargo test
 python3 scripts/test_smoke.py
 ```
 
-GitHub Actions runs frontend checks and backend tests/builds on Linux, macOS and Windows. The current regression suite contains **17 frontend tests, 7 Rust tests and 17 HTTP smoke checks**.
+GitHub Actions runs frontend checks and backend tests/builds on Linux, macOS and Windows. The current regression suite contains **22 frontend tests, 9 Rust tests and 17 HTTP smoke checks**.
 
 <details>
 <summary><strong>Project layout</strong></summary>
