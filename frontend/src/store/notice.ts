@@ -1,16 +1,32 @@
 import { create } from 'zustand'
-export const useNoticeStore = create<{ message: string | null; show: (message: string) => void; dismiss: () => void }>(set => ({
-  message: null, show: message => set({ message }), dismiss: () => set({ message: null }),
-}))
-export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init)
-  if (!response.ok) throw new Error(`Request failed (${response.status}). Please try again.`)
-  if (response.status === 204) return undefined as T
-  return response.json() as Promise<T>
+
+export interface Notice {
+  id: number
+  message: string
+  tone: 'error' | 'info'
 }
-export async function reportFailure(action: () => Promise<void>): Promise<boolean> {
-  try { await action(); return true } catch (error) {
-    useNoticeStore.getState().show(error instanceof Error ? error.message : 'Connection failed. Please try again.')
+
+let next = 1
+
+export const useNotices = create<{ notices: Notice[]; push: (message: string, tone?: Notice['tone']) => void; dismiss: (id: number) => void }>(set => ({
+  notices: [],
+  push: (message, tone = 'error') => {
+    const id = next++
+    set(s => ({ notices: [...s.notices.filter(n => n.message !== message), { id, message, tone }].slice(-3) }))
+    setTimeout(() => set(s => ({ notices: s.notices.filter(n => n.id !== id) })), tone === 'error' ? 8000 : 4000)
+  },
+  dismiss: id => set(s => ({ notices: s.notices.filter(n => n.id !== id) })),
+}))
+
+export const notify = (message: string, tone: Notice['tone'] = 'error') => useNotices.getState().push(message, tone)
+
+/** Run an action and show its error as a notice. Returns true on success. */
+export async function attempt(action: () => Promise<unknown>): Promise<boolean> {
+  try {
+    await action()
+    return true
+  } catch (error) {
+    notify(error instanceof Error ? error.message : 'Something went wrong. Please try again.')
     return false
   }
 }

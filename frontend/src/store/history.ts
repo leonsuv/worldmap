@@ -1,51 +1,96 @@
 import { create } from 'zustand'
+import { api, isAbort, rowsToObjects } from '../lib/api'
 
 export interface HistoryPoint {
-  mmsi: number; lat: number; lon: number; course: number | null; speed: number | null
-  heading: number | null; ship_name: string; ship_type: number | null; recorded_at: number
+  mmsi: number
+  lon: number
+  lat: number
+  course: number | null
+  speed: number | null
+  heading: number | null
+  ship_type: number | null
+  name: string
 }
+
 interface HistoryState {
-  enabled: boolean; positions: HistoryPoint[]; timestamps: number[]; currentTs: number | null
-  loading: boolean; error: string | null; toggle: () => void
-  fetchTimestamps: () => Promise<void>; seek: (ts: number) => Promise<void>
+  enabled: boolean
+  timestamps: number[]
+  index: number
+  positions: HistoryPoint[]
+  loading: boolean
+  playing: boolean
+  error: string | null
+  open: () => Promise<void>
+  close: () => void
+  seek: (index: number) => Promise<void>
+  setPlaying: (playing: boolean) => void
 }
+
 let request: AbortController | null = null
-let timestampsRequest: AbortController | null = null
-export const useHistoryStore = create<HistoryState>((set, get) => ({
-  enabled: false, positions: [], timestamps: [], currentTs: null, loading: false, error: null,
-  toggle: () => {
-    request?.abort(); timestampsRequest?.abort()
-    const enabled = !get().enabled
-    set({ enabled, positions: [], currentTs: null, loading: false, error: null })
-    if (enabled) void get().fetchTimestamps()
-  },
-  fetchTimestamps: async () => {
-    timestampsRequest?.abort()
-    const ac = new AbortController(); timestampsRequest = ac
-    set({ loading: true, error: null })
-    try {
-      const response = await fetch('/api/history/timestamps', { signal: ac.signal })
-      if (!response.ok) throw new Error('History unavailable')
-      const data = await response.json()
-      if (ac.signal.aborted || !get().enabled) return
-      const timestamps = (data.timestamps as number[]).sort((a, b) => a - b)
-      set({ timestamps, loading: false })
-      if (timestamps.length) await get().seek(timestamps[timestamps.length - 1])
-    } catch {
-      if (!ac.signal.aborted) set({ loading: false, error: 'History could not be loaded.' })
-    }
-  },
-  seek: async (ts) => {
+let player: ReturnType<typeof setInterval> | null = null
+
+function stopPlayer() {
+  if (player) clearInterval(player)
+  player = null
+}
+
+export const useHistory = create<HistoryState>((set, get) => ({
+  enabled: false,
+  timestamps: [],
+  index: -1,
+  positions: [],
+  loading: false,
+  playing: false,
+  error: null,
+  open: async () => {
     request?.abort()
-    const ac = new AbortController(); request = ac
-    set({ loading: true, currentTs: ts, error: null })
+    const ac = new AbortController()
+    request = ac
+    set({ enabled: true, loading: true, error: null, positions: [], timestamps: [], index: -1 })
     try {
-      const response = await fetch(`/api/history/ships?from=${ts}&to=${ts}`, { signal: ac.signal })
-      if (!response.ok) throw new Error('History unavailable')
-      const positions: HistoryPoint[] = await response.json()
-      if (!ac.signal.aborted && get().enabled) set({ positions, loading: false })
-    } catch {
-      if (!ac.signal.aborted) set({ loading: false, error: 'Snapshot could not be loaded.' })
+      const { timestamps } = await api<{ timestamps: number[] }>('/api/history/timestamps', { signal: ac.signal })
+      if (ac.signal.aborted || !get().enabled) return
+      const sorted = [...timestamps].sort((a, b) => a - b)
+      set({ timestamps: sorted, loading: false })
+      if (sorted.length) await get().seek(sorted.length - 1)
+    } catch (error) {
+      if (!isAbort(error) && get().enabled) set({ loading: false, error: 'Recorded positions could not be loaded.' })
     }
+  },
+  close: () => {
+    request?.abort()
+    stopPlayer()
+    set({ enabled: false, positions: [], timestamps: [], index: -1, loading: false, playing: false, error: null })
+  },
+  seek: async index => {
+    const ts = get().timestamps[index]
+    if (ts === undefined) return
+    request?.abort()
+    const ac = new AbortController()
+    request = ac
+    set({ index, loading: true, error: null })
+    try {
+      const data = await api<{ fields: string[]; rows: unknown[][] }>(`/api/history/ships?at=${ts}`, { signal: ac.signal })
+      if (ac.signal.aborted || !get().enabled) return
+      set({ positions: rowsToObjects<HistoryPoint>(data.fields, data.rows), loading: false })
+    } catch (error) {
+      if (!isAbort(error) && get().enabled) set({ loading: false, error: 'This snapshot could not be loaded.' })
+    }
+  },
+  setPlaying: playing => {
+    stopPlayer()
+    set({ playing })
+    if (!playing) return
+    player = setInterval(() => {
+      const { index, timestamps, loading, enabled } = get()
+      if (!enabled) return stopPlayer()
+      if (loading) return
+      if (index >= timestamps.length - 1) {
+        stopPlayer()
+        set({ playing: false })
+        return
+      }
+      void get().seek(index + 1)
+    }, 1200)
   },
 }))

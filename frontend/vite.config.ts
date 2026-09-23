@@ -1,33 +1,38 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { visualizer } from 'rollup-plugin-visualizer'
 
-export default defineConfig({
-  plugins: [
-    react(),
-    visualizer({ filename: 'dist/bundle-stats.html', gzipSize: true, brotliSize: true }),
-  ],
+const backend = process.env.WORLDMAP_BACKEND ?? 'http://127.0.0.1:3000'
+
+export default defineConfig(({ mode }) => ({
+  plugins: [react(), mode === 'analyze' && visualizer({ filename: 'dist/bundle-stats.html', gzipSize: true, brotliSize: true })],
   server: {
     proxy: {
-      '/api': {
-        target: 'http://localhost:3000',
-        ws: true,
-      },
-      '/tiles': 'http://localhost:3000',
+      '/api': { target: backend, ws: true },
+      '/tiles': backend,
+    },
+  },
+  preview: {
+    proxy: {
+      '/api': { target: backend, ws: true },
+      '/tiles': backend,
     },
   },
   build: {
     sourcemap: false,
-    chunkSizeWarningLimit: 1000,
+    chunkSizeWarningLimit: 1200,
     rollupOptions: {
       output: {
         manualChunks(id) {
-          // Shared bundler helpers must not make the UI eagerly load the map engine.
-          if (id.includes('commonjsHelpers') || id.includes('vite/preload-helper')) return 'runtime'
           if (id.includes('/node_modules/maplibre-gl/')) return 'maplibre'
-          if (/\/node_modules\/@(?:deck|luma|loaders|math)\.gl\//.test(id)) return 'deckgl'
+          if (/\/node_modules\/@(?:deck|luma|loaders|math|probe)\.gl\//.test(id)) return 'deckgl'
         },
       },
     },
   },
-})
+  test: {
+    environment: 'node',
+    include: ['tests/**/*.test.ts'],
+  },
+}))

@@ -1,12 +1,13 @@
 {
-  "name": "frontend",
+  "name": "worldmap-frontend",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "analyze": "tsc -b && vite build && echo 'Bundle report: dist/bundle-stats.html'",
+    "analyze": "tsc -b && vite build --mode analyze",
+    "typecheck": "tsc -b",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run"

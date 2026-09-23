@@ -1,59 +1,190 @@
-import { memo, useState, useEffect, useRef } from 'react'
-import { Search as SearchIcon } from 'lucide-react'
-import { mapInstance } from '../map/runtime'
+import { useEffect, useRef, useState } from 'react'
+import { Anchor, Atom, MapPin, Plane, Search as SearchIcon, Ship, X } from 'lucide-react'
+import { api, isAbort } from '../lib/api'
+import { flyTo } from '../map/runtime'
+import { useSelection } from '../store/selection'
+import { findFeature } from '../data/staticData'
 
-interface NominatimResult { display_name: string; lat: string; lon: string }
-function Search() {
+export interface SearchResult {
+  kind: 'airport' | 'seaport' | 'reactor' | 'vessel' | 'place'
+  id: string
+  name: string
+  detail: string
+  lat: number
+  lon: number
+  zoom: number
+}
+
+const ICONS = { airport: Plane, seaport: Anchor, reactor: Atom, vessel: Ship, place: MapPin }
+
+function openResult(r: SearchResult) {
+  flyTo(r.lon, r.lat, r.zoom)
+  const select = useSelection.getState().select
+  if (r.kind === 'vessel') select({ kind: 'ship', id: Number(r.id) })
+  else if (r.kind === 'airport' || r.kind === 'seaport' || r.kind === 'reactor') {
+    const key = r.kind === 'reactor' ? 'reactors' : r.kind === 'airport' ? 'airports' : 'seaports'
+    const prop = r.kind === 'airport' ? 'ident' : r.kind === 'seaport' ? 'locode' : 'name'
+    const feature = findFeature(key, prop, r.id) ?? findFeature(key, 'name', r.name)
+    select({ kind: r.kind, id: r.id, lngLat: [r.lon, r.lat], props: feature?.properties ?? { name: r.name } })
+  } else {
+    select({ kind: 'place', id: r.id, lngLat: [r.lon, r.lat], props: { name: r.name, detail: r.detail } })
+  }
+}
+
+export default function Search() {
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<NominatimResult[]>([])
+  const [results, setResults] = useState<SearchResult[]>([])
   const [open, setOpen] = useState(false)
+  const [active, setActive] = useState(-1)
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const [selected, setSelected] = useState(-1)
-  const controller = useRef<AbortController | null>(null)
+  const [message, setMessage] = useState('')
   const input = useRef<HTMLInputElement>(null)
+  const controller = useRef<AbortController | null>(null)
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
   useEffect(() => {
-    const shortcut = (event: KeyboardEvent) => {
-      if (event.key === '/' && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLTextAreaElement)) { event.preventDefault(); input.current?.focus() }
+    const shortcut = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement
+      if (e.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) {
+        e.preventDefault()
+        input.current?.focus()
+      }
     }
     window.addEventListener('keydown', shortcut)
-    return () => { window.removeEventListener('keydown', shortcut); controller.current?.abort() }
+    return () => {
+      window.removeEventListener('keydown', shortcut)
+      controller.current?.abort()
+      clearTimeout(timer.current)
+    }
   }, [])
-  const submit = async () => {
+
+  const run = async (q: string, places: boolean) => {
     controller.current?.abort()
-    const q = query.trim()
-    if (q.length < 2) { setResults([]); setOpen(false); return }
+    const trimmed = q.trim()
+    if (trimmed.length < 2) {
+      setResults([])
+      setMessage('')
+      setLoading(false)
+      return
+    }
     const ac = new AbortController()
     controller.current = ac
-    setLoading(true); setError(''); setOpen(true); setSelected(-1)
+    setLoading(true)
     try {
-      const response = await fetch(`/api/search?q=${encodeURIComponent(q)}`, { signal: ac.signal })
-      if (!response.ok) throw new Error('Search unavailable. Please try again.')
-      const data: NominatimResult[] = await response.json()
-      if (!ac.signal.aborted) { setResults(data); if (!data.length) setError('No places found. Try a different name.') }
+      const data = await api<{ results: SearchResult[]; places_error: string | null }>(
+        `/api/search?q=${encodeURIComponent(trimmed)}&places=${places}`,
+        { signal: ac.signal },
+      )
+      if (ac.signal.aborted) return
+      setResults(data.results)
+      setActive(places && data.results.length ? 0 : -1)
+      const hint = places
+        ? data.results.length ? '' : 'Nothing found. Try another spelling.'
+        : data.results.length ? 'Press Enter to include places worldwide.' : 'Press Enter to search places worldwide.'
+      setMessage(data.places_error ?? hint)
+      setOpen(true)
     } catch (error) {
-      if (!ac.signal.aborted) { setResults([]); setError(error instanceof Error ? error.message : 'Search unavailable.') }
-    } finally { if (!ac.signal.aborted) setLoading(false) }
+      if (!isAbort(error)) {
+        setResults([])
+        setMessage(error instanceof Error ? error.message : 'Search failed.')
+      }
+    } finally {
+      if (!ac.signal.aborted) setLoading(false)
+    }
   }
-  const selectResult = (result: NominatimResult) => {
-    controller.current?.abort(); setLoading(false); setOpen(false); setQuery(result.display_name)
-    mapInstance?.flyTo({ center: [Number(result.lon), Number(result.lat)], zoom: 11, duration: 1200 })
+
+  const onChange = (value: string) => {
+    setQuery(value)
+    setOpen(true)
+    clearTimeout(timer.current)
+    // Local datasets as you type; worldwide places only on Enter (Nominatim policy).
+    timer.current = setTimeout(() => void run(value, false), 180)
   }
-  return <div className="search-bar">
-    <SearchIcon size={16} className="search-icon" />
-    <input ref={input} className="search-input" role="combobox" aria-label="Search places" aria-expanded={open} aria-controls="place-results" aria-activedescendant={selected >= 0 ? `place-${selected}` : undefined} autoComplete="off" placeholder="Search a place, then press Enter…" value={query}
-      onChange={e => { controller.current?.abort(); setLoading(false); setQuery(e.target.value); setResults([]); setOpen(false); setSelected(-1) }}
-      onFocus={() => results.length > 0 && setOpen(true)} onBlur={() => setOpen(false)}
-      onKeyDown={e => {
-        if (e.key === 'Escape') { controller.current?.abort(); setLoading(false); setOpen(false); input.current?.blur() }
-        if (e.key === 'ArrowDown' && results.length) { e.preventDefault(); setOpen(true); setSelected(i => (i + 1) % results.length) }
-        if (e.key === 'ArrowUp' && results.length) { e.preventDefault(); setSelected(i => (i - 1 + results.length) % results.length) }
-        if (e.key === 'Enter') { e.preventDefault(); if (open && selected >= 0 && results[selected]) selectResult(results[selected]); else void submit() }
-      }} />
-    <kbd className="search-key">↵</kbd>
-    {open && <ul id="place-results" className="search-results" role="listbox" aria-label="Places">
-      {loading ? <li role="presentation" className="search-message">Searching places…</li> : error ? <li role="presentation" className="search-message">{error}</li> : results.map((r, i) => <li id={`place-${i}`} key={`${r.lat},${r.lon}`} role="option" aria-selected={selected === i} className={`search-result ${selected === i ? 'selected' : ''}`} onMouseDown={e => { e.preventDefault(); selectResult(r) }}>{r.display_name}</li>)}
-    </ul>}
-  </div>
+
+  const choose = (r: SearchResult) => {
+    setOpen(false)
+    setQuery(r.name)
+    input.current?.blur()
+    openResult(r)
+  }
+
+  const local = results.filter(r => r.kind !== 'place')
+  const places = results.filter(r => r.kind === 'place')
+  const ordered = [...local, ...places]
+
+  return (
+    <div className="search">
+      <label className="search-field">
+        {loading ? <span className="spinner" /> : <SearchIcon size={16} />}
+        <input
+          ref={input}
+          role="combobox"
+          aria-expanded={open && (ordered.length > 0 || !!message)}
+          aria-controls="search-results"
+          aria-activedescendant={active >= 0 ? `search-${active}` : undefined}
+          aria-label="Search airports, ports, vessels and places"
+          placeholder="Search airports, ports, vessels, places…"
+          autoComplete="off"
+          spellCheck={false}
+          value={query}
+          onChange={e => onChange(e.target.value)}
+          onFocus={() => query.trim().length >= 2 && setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 120)}
+          onKeyDown={e => {
+            if (e.key === 'ArrowDown' && ordered.length) {
+              e.preventDefault()
+              setOpen(true)
+              setActive(i => (i + 1) % ordered.length)
+            } else if (e.key === 'ArrowUp' && ordered.length) {
+              e.preventDefault()
+              setActive(i => (i - 1 + ordered.length) % ordered.length)
+            } else if (e.key === 'Enter') {
+              e.preventDefault()
+              if (open && active >= 0 && ordered[active]) choose(ordered[active])
+              else void run(query, true)
+            } else if (e.key === 'Escape') {
+              setOpen(false)
+              input.current?.blur()
+            }
+          }}
+        />
+        {query ? (
+          <button className="icon-btn" style={{ width: 24, height: 24 }} aria-label="Clear search" onMouseDown={e => e.preventDefault()} onClick={() => { setQuery(''); setResults([]); setMessage(''); input.current?.focus() }}>
+            <X size={14} />
+          </button>
+        ) : (
+          <kbd>/</kbd>
+        )}
+      </label>
+      {open && (ordered.length > 0 || message) && (
+        <ul id="search-results" className="search-results" role="listbox">
+          {local.length > 0 && <li className="search-group" role="presentation">On the map</li>}
+          {ordered.map((r, i) => {
+            const Icon = ICONS[r.kind]
+            return (
+              <li key={`${r.kind}-${r.id}-${i}`} role="presentation">
+                {i === local.length && places.length > 0 && <div className="search-group">Places</div>}
+                <div
+                  id={`search-${i}`}
+                  role="option"
+                  aria-selected={active === i}
+                  className="search-result"
+                  onMouseDown={e => e.preventDefault()}
+                  onMouseEnter={() => setActive(i)}
+                  onClick={() => choose(r)}
+                >
+                  <span className="kind-icon"><Icon size={15} /></span>
+                  <span>
+                    <strong>{r.name}</strong>
+                    {r.detail && <small>{r.detail}</small>}
+                  </span>
+                </div>
+              </li>
+            )
+          })}
+          {message && <li className="search-hint" role="presentation">{message}</li>}
+        </ul>
+      )}
+    </div>
+  )
 }
-export default memo(Search)

@@ -160,6 +160,7 @@ impl TileIndex {
                     "minzoom": s.meta.minzoom,
                     "maxzoom": s.meta.maxzoom,
                     "format": s.meta.format,
+                    "attribution": s.meta.attribution,
                     "layers": s.meta.vector_layers.as_ref()
                         .and_then(|l| l.as_array())
                         .map(|l| l.iter().filter_map(|v| v.get("id").cloned()).collect::<Vec<_>>())

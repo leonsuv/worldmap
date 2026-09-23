@@ -1,39 +1,46 @@
 import { create } from 'zustand'
-import { apiRequest, reportFailure } from './notice'
+import { api, postJson } from '../lib/api'
+import { attempt } from './notice'
+import { useAlerts } from './alerts'
 
-export interface WatchlistItem {
+export type WatchType = 'vessel' | 'port' | 'airport' | 'reactor' | 'area' | 'pipeline'
+
+export interface WatchItem {
   id: number
-  wtype: string
+  wtype: WatchType
   name: string
-  params: Record<string, unknown>
+  params: { mmsi?: number; lat?: number; lon?: number; radius_km?: number }
   created_at: number
+  live?: { lat: number; lon: number; speed: number | null; age_secs: number } | null
 }
 
 interface WatchlistState {
-  items: WatchlistItem[]
-  open: boolean
+  items: WatchItem[]
   loading: boolean
-  toggle: () => void
+  loaded: boolean
   fetch: () => Promise<void>
-  add: (wtype: string, name: string, params?: Record<string, unknown>) => Promise<boolean>
-  remove: (id: number) => Promise<void>
+  add: (wtype: WatchType, name: string, params: WatchItem['params']) => Promise<boolean>
+  remove: (id: number) => Promise<boolean>
 }
 
-export const useWatchlistStore = create<WatchlistState>((set, get) => ({
+export const useWatchlist = create<WatchlistState>((set, get) => ({
   items: [],
-  open: false,
   loading: false,
-  toggle: () => set(s => ({ open: !s.open })),
+  loaded: false,
   fetch: async () => {
     set({ loading: true })
-    await reportFailure(async () => set({ items: await apiRequest<WatchlistItem[]>('/api/watchlist') }))
+    await attempt(async () => set({ items: await api<WatchItem[]>('/api/watchlist'), loaded: true }))
     set({ loading: false })
   },
-  add: async (wtype, name, params) => reportFailure(async () => {
-    await apiRequest('/api/watchlist', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ wtype, name, params: params ?? {} }) })
-    await get().fetch()
-  }),
-  remove: async (id) => {
-    await reportFailure(async () => { await apiRequest(`/api/watchlist/${id}`, { method: 'DELETE' }); await get().fetch() })
-  },
+  add: (wtype, name, params) =>
+    attempt(async () => {
+      await postJson('/api/watchlist', { wtype, name, params })
+      await get().fetch()
+      await useAlerts.getState().fetchCount()
+    }),
+  remove: id =>
+    attempt(async () => {
+      await api(`/api/watchlist/${id}`, { method: 'DELETE' })
+      set(s => ({ items: s.items.filter(i => i.id !== id) }))
+    }),
 }))

@@ -217,7 +217,12 @@ def backend_command() -> list[str]:
     if cargo:
         # A no-op when the binary is current; rebuilds it after code changes.
         log("Preparing the tile builder (cargo build --release)...")
-        subprocess.run([cargo, "build", "--release", "--manifest-path", str(ROOT / "backend" / "Cargo.toml")], check=True)
+        result = subprocess.run([cargo, "build", "--release", "--manifest-path", str(ROOT / "backend" / "Cargo.toml")])
+        if result.returncode != 0:
+            if not binary.exists():
+                sys.exit("Building the tile builder failed.")
+            # On Windows a running server locks the executable; the existing build works too.
+            log("Could not rebuild (is the WorldMap server running?); using the existing binary.")
     elif not binary.exists():
         sys.exit("Rust (cargo) is required to build tiles: https://rustup.rs")
     return [str(binary)]

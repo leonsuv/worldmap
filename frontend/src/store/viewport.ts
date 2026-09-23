@@ -2,14 +2,20 @@ import { create } from 'zustand'
 
 export interface ViewportState {
   zoom: number
-  bbox: [number, number, number, number] // [west, south, east, north]
-  center: [number, number] // [lon, lat]
+  /** [west, south, east, north]; west/east may exceed ±180 on repeated worlds. */
+  bbox: [number, number, number, number]
+  center: [number, number]
+  /** Pointer position, or null when the pointer is off the map. */
+  pointer: [number, number] | null
   setViewport: (v: Pick<ViewportState, 'zoom' | 'bbox' | 'center'>) => void
+  setPointer: (p: [number, number] | null) => void
 }
 
-export const useViewportStore = create<ViewportState>((set) => ({
+export const useViewport = create<ViewportState>(set => ({
   zoom: 2,
-  bbox: [-180, -90, 180, 90],
-  center: [0, 20],
-  setViewport: (v) => set(v),
+  bbox: [-180, -85, 180, 85],
+  center: [10, 25],
+  pointer: null,
+  setViewport: v => set(v),
+  setPointer: pointer => set({ pointer }),
 }))

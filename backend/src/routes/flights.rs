@@ -84,6 +84,19 @@ async fn opensky(state: &AppState, key: &str, path: &str, query: &[(&str, String
     .await
 }
 
+/// OpenSky serves flight history only to registered API clients.
+fn history_error(state: &AppState, e: UpstreamError) -> ApiError {
+    match e {
+        UpstreamError::Status(401 | 403) if state.config.opensky_credentials.is_none() => ApiError::unavailable(
+            "Flight history needs a free OpenSky account: set OPENSKY_CLIENT_ID and OPENSKY_CLIENT_SECRET in backend/.env.",
+        ),
+        UpstreamError::Status(401 | 403) => {
+            ApiError::unavailable("OpenSky rejected the API client; check OPENSKY_CLIENT_ID and OPENSKY_CLIENT_SECRET.")
+        }
+        other => other.into(),
+    }
+}
+
 fn round(v: Option<f64>, places: i32) -> Value {
     let f = 10f64.powi(places);
     v.filter(|x| x.is_finite()).map(|x| Value::from((x * f).round() / f)).unwrap_or(Value::Null)
@@ -226,12 +239,13 @@ pub struct AircraftQuery {
 /// GET /api/flights/aircraft — flights of one aircraft (OpenSky batch data, updated nightly).
 pub async fn get_aircraft_flights(State(state): State<Arc<AppState>>, Query(q): Query<AircraftQuery>) -> ApiResult<Json<Value>> {
     let icao = icao24(&q.icao24)?;
-    let (begin, end) = window(q.begin, q.end, 2 * 86400, 2 * 86400)?;
-    // Align to the hour so repeated clicks share one cache entry.
-    let (begin, end) = (begin - begin % 3600, end - end % 3600 + 3600);
+    let (begin, end) = window(q.begin, q.end, 2 * 86400 - 3600, 2 * 86400)?;
+    // Align to the hour so repeated clicks share one cache entry (still <= 2 days).
+    let end = end - end % 3600 + 3600;
+    let begin = (begin - begin % 3600).max(end - 2 * 86400);
     let key = format!("opensky:aircraft:{icao}:{begin}:{end}");
     let query = [("icao24", icao), ("begin", begin.to_string()), ("end", end.to_string())];
-    let fetched = opensky(&state, &key, "/flights/aircraft", &query, 1800).await?;
+    let fetched = opensky(&state, &key, "/flights/aircraft", &query, 1800).await.map_err(|e| history_error(&state, e))?;
     let flights: Value = serde_json::from_slice(&fetched.body).unwrap_or(Value::Null);
     Ok(Json(if flights.is_array() { flights } else { Value::Array(vec![]) }))
 }
@@ -259,7 +273,7 @@ pub async fn get_airport_flights(State(state): State<Arc<AppState>>, Query(q): Q
     let (begin, end) = window(q.begin.or(Some(day_start - 86400)), q.end.or(Some(day_start)), 86400, 2 * 86400)?;
     let key = format!("opensky:{}:{airport}:{begin}:{end}", q.kind);
     let query = [("airport", airport), ("begin", begin.to_string()), ("end", end.to_string())];
-    let fetched = opensky(&state, &key, path, &query, 3600).await?;
+    let fetched = opensky(&state, &key, path, &query, 3600).await.map_err(|e| history_error(&state, e))?;
     let flights: Value = serde_json::from_slice(&fetched.body).unwrap_or(Value::Null);
     Ok(Json(serde_json::json!({ "begin": begin, "end": end, "flights": if flights.is_array() { flights } else { Value::Array(vec![]) } })))
 }
