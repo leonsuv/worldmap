@@ -20,8 +20,11 @@ DATA_DIR = Path(os.environ.get("DATA_DIR") or ROOT / "data").resolve()
 SOURCES_DIR = DATA_DIR / "sources"
 TILES_DIR = DATA_DIR / "tiles"
 USER_AGENT = "WorldMap-data/0.2 (+https://github.com/leonsuv/worldmap)"
+# Public Overpass instances (https://wiki.openstreetmap.org/wiki/Overpass_API#Public_Overpass_API_instances).
+# Unreachable ones are dropped by a quick probe before a download starts.
 OVERPASS_URLS = [
     os.environ.get("OVERPASS_URL", "https://overpass-api.de/api/interpreter"),
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
 ]
 
@@ -121,27 +124,53 @@ class OverpassOverload(Exception):
     """The query was too large for one request; split the area."""
 
 
-def overpass(query: str, timeout: int) -> dict:
+def probe_overpass() -> None:
+    """Keep only the Overpass servers that answer a tiny query right now."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    query = urllib.parse.urlencode({"data": '[out:json][timeout:20];node(47.0,8.0,47.01,8.01);out ids 1;'}).encode()
+
+    def alive(url: str) -> bool:
+        try:
+            json.loads(fetch(url, data=query, timeout=45, retries=1))
+            return True
+        except Exception:
+            return False
+
+    with ThreadPoolExecutor(len(OVERPASS_URLS)) as pool:
+        results = list(pool.map(alive, OVERPASS_URLS))
+    live = [url for url, ok in zip(OVERPASS_URLS, results) if ok]
+    for url, ok in zip(OVERPASS_URLS, results):
+        log(f"  {'up  ' if ok else 'down'} {url}")
+    if live:
+        OVERPASS_URLS[:] = live
+
+
+def overpass(query: str, timeout: int, prefer: int = 0) -> dict:
+    """Run a query, starting on OVERPASS_URLS[prefer] and moving to the next server after a failure.
+
+    A 504 from one busy server says little about the query, so only 504s from
+    two servers (or an explicit Overpass timeout remark) count as "too dense".
+    """
     last: Exception | None = None
+    gateway_timeouts = 0
     for attempt in range(6):
-        url = OVERPASS_URLS[attempt % len(OVERPASS_URLS)] if attempt >= 3 else OVERPASS_URLS[0]
+        url = OVERPASS_URLS[(prefer + attempt) % len(OVERPASS_URLS)]
+        if attempt and attempt % len(OVERPASS_URLS) == 0:
+            time.sleep(15)  # every server failed once; give them a moment
         try:
             body = fetch(url, data=urllib.parse.urlencode({"data": query}).encode(), timeout=timeout + 60, retries=1)
         except urllib.error.HTTPError as error:
             if error.code in (400,):
                 raise
             last = error
-            if error.code == 429:
-                log("    Overpass busy (429); waiting 60 s")
-                time.sleep(60)
-                continue
             if error.code == 504:
-                raise OverpassOverload(str(error)) from error
-            time.sleep(15)
+                gateway_timeouts += 1
+                if gateway_timeouts >= min(2, len(OVERPASS_URLS)):
+                    raise OverpassOverload(str(error)) from error
             continue
         except RuntimeError as error:
             last = error
-            time.sleep(15)
             continue
         data = json.loads(body)
         remark = str(data.get("remark", ""))
@@ -159,38 +188,64 @@ def overpass_cells(
     step: float = 30.0,
     min_step: float = 1.0,
     timeout: int = 300,
+    jobs: int = 4,
 ) -> Iterator[dict]:
     """Yield Overpass elements for every cell, splitting cells that are too dense.
 
+    Up to `jobs` cells are queried at once, spread over the Overpass servers.
     Responses are cached per cell under data/sources/cache/<name>/, so an
     interrupted run resumes where it stopped.
     """
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+
     cache = SOURCES_DIR / "cache" / name
     cache.mkdir(parents=True, exist_ok=True)
     pending = world_cells(step, bbox)
     done = 0
-    while pending:
-        cell = pending.pop(0)
-        key = "_".join(f"{v:.4f}" for v in cell)
-        cached = cache / f"{key}.json.gz"
-        if cached.exists():
-            elements = json.loads(gzip.decompress(cached.read_bytes()))
-        else:
-            size = cell[2] - cell[0]
-            log(f"  Overpass {name}: cell {cell[0]:.1f},{cell[1]:.1f} ({size:g} deg) - {len(pending)} cells left")
-            try:
-                elements = overpass(build_query(cell), timeout).get("elements", [])
-            except OverpassOverload as reason:
-                if size / 2 < min_step:
-                    log(f"    skipping dense cell {key}: {reason}")
+    started = 0
+
+    def cache_path(cell: BBox) -> Path:
+        return cache / ("_".join(f"{v:.4f}" for v in cell) + ".json.gz")
+
+    def run(cell: BBox, prefer: int) -> list[dict]:
+        elements = overpass(build_query(cell), timeout, prefer).get("elements", [])
+        cache_path(cell).write_bytes(gzip.compress(json.dumps(elements).encode()))
+        return elements
+
+    if any(not cache_path(cell).exists() for cell in pending):
+        log("  Checking Overpass servers...")
+        probe_overpass()
+
+    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        running: dict = {}
+        while pending or running:
+            # Cached cells first, then fill free worker slots.
+            while pending and (cache_path(pending[0]).exists() or len(running) < jobs):
+                cell = pending.pop(0)
+                cached = cache_path(cell)
+                if cached.exists():
+                    done += 1
+                    yield from json.loads(gzip.decompress(cached.read_bytes()))
                     continue
-                log("    too dense, splitting into 4")
-                pending[:0] = split(cell)
+                log(f"  Overpass {name}: cell {cell[0]:.1f},{cell[1]:.1f} ({cell[2] - cell[0]:g} deg) - {len(pending)} queued, {len(running) + 1} running")
+                running[pool.submit(run, cell, started % len(OVERPASS_URLS))] = cell
+                started += 1
+            if not running:
                 continue
-            cached.write_bytes(gzip.compress(json.dumps(elements).encode()))
-            time.sleep(1.5)  # be polite to the shared public instance
-        done += 1
-        yield from elements
+            finished, _ = wait(running, return_when=FIRST_COMPLETED)
+            for future in finished:
+                cell = running.pop(future)
+                try:
+                    elements = future.result()
+                except OverpassOverload as reason:
+                    if (cell[2] - cell[0]) / 2 < min_step:
+                        log(f"    skipping dense cell {cache_path(cell).name}: {reason}")
+                    else:
+                        log(f"    cell {cell[0]:.1f},{cell[1]:.1f} too dense, splitting into 4")
+                        pending[:0] = split(cell)
+                    continue
+                done += 1
+                yield from elements
     log(f"  {done} cells processed")
 
 

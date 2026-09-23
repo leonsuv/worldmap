@@ -8,11 +8,11 @@ import { useUi } from '../store/ui'
 import { useHistory } from '../store/history'
 import { fmtCount, timeAgo } from '../lib/format'
 
-function describe(def: LayerDef, on: boolean, avail: Availability, feed: FeedStatus | undefined, zoom: number, historyOn: boolean): { text: string; tone?: 'warn' | 'error' } {
+function describe(def: LayerDef, on: boolean, avail: Availability, feed: FeedStatus | undefined, zoom: number, minZoom: number | undefined, historyOn: boolean): { text: string; tone?: 'warn' | 'error' } {
   if (!avail.ok) return { text: avail.reason ?? 'Unavailable', tone: 'warn' }
   if (!on) return { text: def.source }
   if (def.key === 'ships' && historyOn) return { text: 'Paused during historical replay' }
-  if (def.minZoom && zoom < def.minZoom) return { text: `Zoom in to level ${def.minZoom} to see it`, tone: 'warn' }
+  if (minZoom && zoom < minZoom) return { text: `Zoom in to level ${minZoom} to see it`, tone: 'warn' }
   if (!feed) return { text: def.source }
   if (feed.state === 'loading') return { text: 'Loading…' }
   if (feed.state === 'error') return { text: feed.message ?? 'Source unavailable', tone: 'error' }
@@ -35,7 +35,11 @@ function LayerRow({ def }: { def: LayerDef }) {
   const [showFix, setShowFix] = useState(false)
   const avail = availability(def.key, caps, error)
   const active = on && avail.ok
-  const meta = describe(def, on, avail, feed, zoom, historyOn)
+  // Live tile sources (no prebuilt tileset) only start at their own min zoom.
+  const req = def.requires
+  const tileset = req?.kind === 'tiles' ? caps?.tile_sources.find(t => t.id === req.tileset) : undefined
+  const minZoom = Math.max(def.minZoom ?? 0, tileset?.minzoom ?? 0) || undefined
+  const meta = describe(def, on, avail, feed, zoom, minZoom, historyOn)
   const Icon = def.icon
   const id = `layer-${def.key}`
   return (

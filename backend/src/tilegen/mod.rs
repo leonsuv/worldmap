@@ -110,7 +110,7 @@ impl BuildReport {
     }
 }
 
-fn bbox_of(g: &Geometry) -> Rect {
+pub(crate) fn bbox_of(g: &Geometry) -> Rect {
     let mut r = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
     let mut add = |p: &P| {
         r[0] = r[0].min(p[0]);
@@ -132,7 +132,7 @@ fn pseudo_random(i: usize) -> f64 {
     (h.finish() >> 11) as f64 / (1u64 << 53) as f64
 }
 
-fn simplify_geometry(g: &Geometry, tolerance: f64, min_length: f64) -> Option<Geometry> {
+pub(crate) fn simplify_geometry(g: &Geometry, tolerance: f64, min_length: f64) -> Option<Geometry> {
     match g {
         Geometry::Points(p) => Some(Geometry::Points(p.clone())),
         Geometry::Lines(lines) => {
@@ -219,7 +219,7 @@ fn ring_area(ring: &[[i32; 2]]) -> i64 {
 }
 
 /// Clip a simplified geometry to one tile and convert it to tile coordinates.
-fn clip_to_tile(g: &Geometry, bbox: &Rect, n: f64, tx: u32, ty: u32, buffer: f64) -> Option<(GeomType, Vec<Vec<[i32; 2]>>)> {
+pub(crate) fn clip_to_tile(g: &Geometry, bbox: &Rect, n: f64, tx: u32, ty: u32, buffer: f64) -> Option<(GeomType, Vec<Vec<[i32; 2]>>)> {
     let b = buffer / n;
     let rect = [tx as f64 / n - b, ty as f64 / n - b, (tx + 1) as f64 / n + b, (ty + 1) as f64 / n + b];
     let contained = bbox[0] >= rect[0] && bbox[1] >= rect[1] && bbox[2] <= rect[2] && bbox[3] <= rect[3];
@@ -348,7 +348,7 @@ fn gzip(data: &[u8]) -> Vec<u8> {
 }
 
 /// Encode a tile within the size limit. Returns (gzipped tile, dropped features).
-fn encode_limited(layer: &str, mut features: Vec<TileFeature>, max_bytes: usize, merge: bool) -> (Vec<u8>, usize) {
+pub(crate) fn encode_limited(layer: &str, mut features: Vec<TileFeature>, max_bytes: usize, merge: bool) -> (Vec<u8>, usize) {
     let total = features.len();
     features.sort_by(|a, b| b.priority.total_cmp(&a.priority));
     let mut keep = total;

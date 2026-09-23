@@ -80,27 +80,30 @@ Release archives from the [Releases page](https://github.com/leonsuv/worldmap/re
 | Airports | [OurAirports](https://ourairports.com) | `python scripts/ingest.py` (run by setup) |
 | Seaports | [NGA World Port Index](https://msi.nga.mil/Publications/WPI) | `python scripts/ingest.py` |
 | Nuclear plants | [GeoNuclearData](https://github.com/cristianst85/GeoNuclearData) | `python scripts/ingest.py` |
-| High-voltage lines | OpenStreetMap, 110 kV and above | `python scripts/build_tiles.py hv-lines` |
-| Pipelines | OpenStreetMap (or OGIM) | `python scripts/build_tiles.py pipelines` |
-| Estimated power grid | [Gridfinder](https://gridfinder.org) | `python scripts/build_tiles.py power-grid` |
+| High-voltage lines | OpenStreetMap, 110 kV and above | Nothing (live from zoom 8), or `python scripts/build_tiles.py hv-lines` |
+| Pipelines | OpenStreetMap (or OGIM) | Nothing (live from zoom 8), or `python scripts/build_tiles.py pipelines` |
+| Estimated power grid | [Gridfinder](https://gridfinder.org) | `python scripts/build_tiles.py power-grid` (a few minutes) |
 | 3D buildings | Basemap buildings (OpenStreetMap) | Nothing; zoom in to level 14 |
 
 Layers that are not set up yet show exactly what is missing under **Set up** in the layer panel. After adding a key restart the server; new tiles and re-imported datasets are picked up automatically (or click **Recheck**).
 
 ## Network tiles
 
-Power lines, pipelines and the power grid are served from vector tiles you build once. WorldMap has its own tile builder in the server binary, so **no GDAL, tippecanoe or Docker is needed** — only Python and Rust.
+Power lines, pipelines and the power grid are served from vector tiles. WorldMap has its own tile builder in the server binary, so **no GDAL, tippecanoe or Docker is needed** — only Python and Rust.
+
+**Live mode (no build needed).** Until `hv-lines` or `pipelines` tiles are built, the server fetches them live from the public Overpass servers for the area you look at, from zoom 8. Each new area (about 1.4°) takes roughly 20–90 seconds the first time, depending on how busy the servers are, and is cached for 30 days afterwards. For the zoomed-out view, `python scripts/build_tiles.py hv-lines --backbone` builds just the lines of 300 kV and above for zoom 2–7. A built full tileset always takes over from live mode.
 
 ```sh
 python scripts/build_tiles.py hv-lines                     # worldwide transmission lines from OpenStreetMap
 python scripts/build_tiles.py hv-lines --bbox 5,47,16,55   # just a region (west,south,east,north) — minutes instead of hours
 python scripts/build_tiles.py pipelines                    # oil, gas and hydrogen pipelines from OpenStreetMap
 python scripts/build_tiles.py pipelines --ogim OGIM_v2.7.gpkg   # or the OGIM database (download from Zenodo)
-python scripts/build_tiles.py power-grid                   # Gridfinder grid.gpkg (~200 MB download)
+python scripts/build_tiles.py hv-lines --backbone         # only >= 300 kV for zoom 2-7, to pair with live mode
+python scripts/build_tiles.py power-grid                   # Gridfinder grid.gpkg (~725 MB download)
 python scripts/build_tiles.py all
 ```
 
-- OpenStreetMap data comes from the public Overpass API in areas that split automatically when they are too dense. Downloads are cached in `data/sources/cache/`, so an interrupted run continues where it stopped. A worldwide build takes a while; please keep the public servers in mind.
+- OpenStreetMap data comes from the public Overpass API in areas that split automatically when they are too dense. Up to 4 areas (`--jobs`) are downloaded at once from the Overpass servers that answer a quick check. Downloads are cached in `data/sources/cache/`, so an interrupted run continues where it stopped. A worldwide build takes a while; please keep the public servers in mind.
 - Lines keep their attributes (voltage, operator, name …). Pieces too small to see are snapped away without breaking the network, and connected segments are merged, so lines stay continuous at every zoom.
 - The results are `data/tiles/*.mbtiles`. A running server shows them within 30 seconds.
 

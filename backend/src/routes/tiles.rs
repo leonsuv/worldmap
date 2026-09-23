@@ -18,6 +18,7 @@ use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 
+use crate::live_tiles;
 use crate::state::AppState;
 
 #[derive(Clone, Debug, Serialize)]
@@ -226,9 +227,49 @@ fn content_type(format: &str) -> &'static str {
 }
 
 pub async fn get_tile(State(state): State<Arc<AppState>>, Path((source, z, x, y)): Path<(String, u32, u32, String)>) -> Response {
-    let Some(src) = state.tiles.get(&source) else { return StatusCode::NOT_FOUND.into_response() };
     let (Some(y), true) = (parse_row(&y), z <= 30) else { return StatusCode::BAD_REQUEST.into_response() };
     let Some(tms_y) = tms_row(z, x, y) else { return StatusCode::BAD_REQUEST.into_response() };
+    match state.tiles.get(&source) {
+        Some(src) => mbtiles_tile(src, z, x, y, tms_y).await,
+        None => match live_tiles::find(&source) {
+            Some(layer) => live_tile(&state, layer, z, x, y, tms_y).await,
+            None => StatusCode::NOT_FOUND.into_response(),
+        },
+    }
+}
+
+/// Network layer without a built tileset: the backbone below the live zooms, Overpass above.
+async fn live_tile(state: &Arc<AppState>, layer: &'static live_tiles::LiveLayer, z: u32, x: u32, y: u32, tms_y: u32) -> Response {
+    if z < live_tiles::FETCH_ZOOM {
+        return match state.tiles.get(&format!("{}-backbone", layer.id)) {
+            Some(backbone) => mbtiles_tile(backbone, z, x, y, tms_y).await,
+            None => StatusCode::NO_CONTENT.into_response(),
+        };
+    }
+    if z > live_tiles::MAX_ZOOM {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    match live_tiles::tile(state, layer, z, x, y).await {
+        Ok(Some(data)) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "application/vnd.mapbox-vector-tile"),
+                (header::CONTENT_ENCODING, "gzip"),
+                (header::CACHE_CONTROL, "public, max-age=86400"),
+            ],
+            data,
+        )
+            .into_response(),
+        Ok(None) => (StatusCode::NO_CONTENT, [(header::CACHE_CONTROL, "public, max-age=86400")]).into_response(),
+        Err(e) => {
+            tracing::warn!("Live {} tile {z}/{x}/{y} unavailable: {e}", layer.id);
+            (StatusCode::SERVICE_UNAVAILABLE, [(header::CACHE_CONTROL, "no-store")]).into_response()
+        }
+    }
+}
+
+async fn mbtiles_tile(src: Arc<TileSource>, z: u32, x: u32, y: u32, tms_y: u32) -> Response {
+    let source = src.id.clone();
     if z < src.meta.minzoom as u32 || z > src.meta.maxzoom as u32 {
         return StatusCode::NO_CONTENT.into_response();
     }

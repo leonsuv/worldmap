@@ -13,6 +13,7 @@ pub struct Providers {
     pub open_meteo: Provider,
     pub tomtom: Provider,
     pub nominatim: Provider,
+    pub overpass: Provider,
 }
 
 impl Default for Providers {
@@ -22,6 +23,7 @@ impl Default for Providers {
             open_meteo: Provider::new("Open-Meteo", 60, 900),
             tomtom: Provider::new("TomTom", 60, 900),
             nominatim: Provider::new("Nominatim", 5, 300),
+            overpass: Provider::new("Overpass", 30, 600),
         }
     }
 }

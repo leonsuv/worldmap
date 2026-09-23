@@ -3,9 +3,10 @@
 
     python scripts/build_tiles.py hv-lines              # OSM transmission lines, worldwide
     python scripts/build_tiles.py hv-lines --bbox 5,47,16,55   # a region (west,south,east,north)
+    python scripts/build_tiles.py hv-lines --backbone   # only >= 300 kV for zoom 2-7 (fast)
     python scripts/build_tiles.py pipelines             # OSM oil & gas pipelines
     python scripts/build_tiles.py pipelines --ogim OGIM_v2.7.gpkg
-    python scripts/build_tiles.py power-grid            # Gridfinder estimated grid (downloads ~200 MB)
+    python scripts/build_tiles.py power-grid            # Gridfinder estimated grid (downloads ~725 MB)
     python scripts/build_tiles.py all
 
 Only Python 3.10+ and Rust are required: the tiles are built by
@@ -13,6 +14,9 @@ Only Python 3.10+ and Rust are required: the tiles are built by
 (no GDAL or tippecanoe). Overpass downloads are cached per area under
 data/sources/cache/, so an interrupted run continues where it stopped.
 A running WorldMap server shows new tiles within 30 seconds.
+
+Without a built tileset the server fetches hv-lines and pipelines live from
+Overpass from zoom 8; `--backbone` adds the major lines for the zooms below.
 """
 
 from __future__ import annotations
@@ -40,6 +44,8 @@ GRIDFINDER_URL = "https://zenodo.org/records/3628142/files/grid.gpkg?download=1"
 
 # power=line/cable with any listed voltage >= 110 kV ("380000;220000" style lists).
 HV_REGEX = "(^|;)(1[1-9][0-9]{4}|[2-9][0-9]{5}|[1-9][0-9]{6,})(;|$)"
+# Same, >= 300 kV: the backbone shown below the live zoom levels.
+BACKBONE_REGEX = "(^|;)([3-9][0-9]{5}|[1-9][0-9]{6,})(;|$)"
 
 
 def _geometry(way: dict) -> list[list[float]] | None:
@@ -88,32 +94,35 @@ def hv_feature(way: dict) -> dict | None:
 
 
 def build_hv_lines(args: argparse.Namespace) -> None:
+    name = "hv-lines-backbone" if args.backbone else "hv-lines"
+    regex = BACKBONE_REGEX if args.backbone else HV_REGEX
+
     def query(cell):
         s, w, n, e = cell
         box = f"({s},{w},{n},{e})"
         return f"""[out:json][timeout:300];
 (
-  way["power"="line"]["voltage"~"{HV_REGEX}"]{box};
-  way["power"="cable"]["voltage"~"{HV_REGEX}"]{box};
+  way["power"="line"]["voltage"~"{regex}"]{box};
+  way["power"="cable"]["voltage"~"{regex}"]{box};
 );
 out tags geom;"""
 
     seen: set[int] = set()
 
     def features():
-        for el in overpass_cells("hv-lines", query, bbox=args.bbox, step=args.cell):
+        for el in overpass_cells(name, query, bbox=args.bbox, step=args.cell, jobs=args.jobs):
             if el.get("type") != "way" or el["id"] in seen:
                 continue
             seen.add(el["id"])
             if f := hv_feature(el):
                 yield f
 
-    source = SOURCES_DIR / "hv-lines.geojsonl"
+    source = SOURCES_DIR / f"{name}.geojsonl"
     count = write_geojsonseq(source, features())
     log(f"High-voltage lines: {count:,} ways written to {source}")
     build_tiles([
-        "-o", str(TILES_DIR / "hv-lines.mbtiles"), "-i", str(source), "-l", "hvlines",
-        "-Z", "2", "-z", str(args.maxzoom or 13),
+        "-o", str(TILES_DIR / f"{name}.mbtiles"), "-i", str(source), "-l", "hvlines",
+        "-Z", "2", "-z", str(args.maxzoom or (7 if args.backbone else 13)),
         "--name", "High-voltage lines", "--description", "Transmission lines of 110 kV and above (OpenStreetMap)",
         "--attribution", OSM_ATTRIBUTION,
     ])
@@ -190,7 +199,7 @@ out tags geom;"""
     seen: set[int] = set()
 
     def features():
-        for el in overpass_cells("pipelines", query, bbox=args.bbox, step=args.cell):
+        for el in overpass_cells("pipelines", query, bbox=args.bbox, step=args.cell, jobs=args.jobs):
             if el.get("type") != "way" or el["id"] in seen:
                 continue
             seen.add(el["id"])
@@ -210,7 +219,7 @@ def build_power_grid(args: argparse.Namespace) -> None:
     if not gpkg.exists():
         if args.gpkg:
             sys.exit(f"{gpkg} not found")
-        download(GRIDFINDER_URL, gpkg, label="Gridfinder grid.gpkg (~200 MB) from Zenodo")
+        download(GRIDFINDER_URL, gpkg, label="Gridfinder grid.gpkg (~725 MB) from Zenodo")
     build_tiles([
         "-o", str(TILES_DIR / "power-grid.mbtiles"), "-i", str(gpkg), "-l", "grid",
         "-Z", "2", "-z", str(args.maxzoom or 11), "--simplify", "1.5",
@@ -228,6 +237,8 @@ def main() -> int:
     parser.add_argument("--bbox", help="limit Overpass downloads to west,south,east,north")
     parser.add_argument("--maxzoom", type=int, help="highest zoom level to build")
     parser.add_argument("--cell", type=float, default=20.0, help="initial Overpass cell size in degrees (split automatically)")
+    parser.add_argument("--backbone", action="store_true", help="hv-lines: only >= 300 kV up to zoom 7, for use with live tiles")
+    parser.add_argument("--jobs", type=int, default=4, help="Overpass requests to run in parallel (default 4)")
     parser.add_argument("--ogim", help="pipelines: use an OGIM GeoPackage instead of OpenStreetMap")
     parser.add_argument("--gpkg", help="power-grid: use a local Gridfinder grid.gpkg")
     args = parser.parse_args()

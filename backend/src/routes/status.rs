@@ -6,6 +6,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use std::sync::Arc;
 
+use crate::live_tiles;
 use crate::state::AppState;
 
 pub async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -17,13 +18,33 @@ pub async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     })
     .await;
 
+    // Network layers without a built tileset are served live from Overpass.
+    let mut tiles = state.tiles.names();
+    let mut tile_sources = state.tiles.summaries();
+    for layer in &live_tiles::LAYERS {
+        if tiles.iter().any(|t| t == layer.id) {
+            continue;
+        }
+        let backbone = state.tiles.get(&format!("{}-backbone", layer.id));
+        tiles.push(layer.id.to_string());
+        tile_sources.push(serde_json::json!({
+            "id": layer.id,
+            "minzoom": backbone.map_or(live_tiles::FETCH_ZOOM, |b| b.meta.minzoom as u32),
+            "maxzoom": live_tiles::MAX_ZOOM,
+            "format": "pbf",
+            "attribution": "© OpenStreetMap contributors",
+            "layers": [layer.layer],
+            "live": true,
+        }));
+    }
+
     let ds = state.datasets();
     let ais = state.ais.status();
     let body = serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "started_at": state.started_at,
-        "tiles": state.tiles.names(),
-        "tile_sources": state.tiles.summaries(),
+        "tiles": tiles,
+        "tile_sources": tile_sources,
         "ships_configured": state.config.aisstream_key.is_some(),
         "traffic_configured": state.config.tomtom_key.is_some(),
         "flights_authenticated": state.config.opensky_credentials.is_some(),
