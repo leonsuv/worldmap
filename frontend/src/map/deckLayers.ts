@@ -43,8 +43,9 @@ const buildShips = memo((ships: Ship[], zoom: number, theme: Theme, flat: boolea
   const colors = categoryColors(theme)
   // deck.gl's globe view cannot draw IconLayer, so the globe shows dots.
   if (zoom < 5.5 || !flat) {
+    // Each layer class needs its own id: deck.gl hands state to the layer with the same id.
     return new ScatterplotLayer<Ship>({
-      id: 'ships',
+      id: 'ships-dots',
       data: ships,
       getPosition: s => [s.lon, s.lat],
       getFillColor: s => colors[s.category],
@@ -58,7 +59,7 @@ const buildShips = memo((ships: Ship[], zoom: number, theme: Theme, flat: boolea
   const base = zoomRamp(zoom, [[5.5, 10], [9, 15], [13, 20], [16, 26]])
   const { url, mapping } = iconAtlas()
   return new IconLayer<Ship>({
-    id: 'ships',
+    id: 'ships-icons',
     data: ships,
     iconAtlas: url,
     iconMapping: mapping,
@@ -93,7 +94,7 @@ const buildFlights = (flights: Flight[], zoom: number, tick: number, flat: boole
   const fallback = flightsDataTime()
   if (!flat) {
     return new ScatterplotLayer<Flight>({
-      id: 'flights',
+      id: 'flights-dots',
       data: flights,
       getPosition: f => extrapolate(f, now, fallback),
       getFillColor: f => altitudeColor(f.altitude, f.on_ground),
@@ -105,7 +106,7 @@ const buildFlights = (flights: Flight[], zoom: number, tick: number, flat: boole
   }
   const { url, mapping } = iconAtlas()
   return new IconLayer<Flight>({
-    id: 'flights',
+    id: 'flights-icons',
     data: flights,
     iconAtlas: url,
     iconMapping: mapping,
@@ -131,7 +132,7 @@ const buildWeather = memo((points: WeatherPoint[], zoom: number, theme: Theme, f
   if (!flat) {
     return [
       new ScatterplotLayer<WeatherPoint>({
-        id: 'weather-wind',
+        id: 'weather-wind-dots',
         data: wind,
         getPosition: p => [p.lon, p.lat],
         getFillColor: p => rampColor(WIND_STOPS, (p.wind_speed ?? 0) / WIND_MAX, 235),
@@ -146,7 +147,7 @@ const buildWeather = memo((points: WeatherPoint[], zoom: number, theme: Theme, f
   }
   return [
     new IconLayer<WeatherPoint>({
-      id: 'weather-wind',
+      id: 'weather-wind-icons',
       data: wind,
       iconAtlas: url,
       iconMapping: mapping,

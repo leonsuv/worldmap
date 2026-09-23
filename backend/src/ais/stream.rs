@@ -8,6 +8,11 @@ use tokio_tungstenite::tungstenite::Message;
 use super::{parse_message, AisHub, Update};
 
 const STREAM_URL: &str = "wss://stream.aisstream.io/v0/stream";
+
+/// The stream endpoint; `AISSTREAM_URL` points it at a recorded or simulated feed.
+fn stream_url() -> String {
+    std::env::var("AISSTREAM_URL").ok().filter(|u| !u.trim().is_empty()).unwrap_or_else(|| STREAM_URL.to_string())
+}
 /// Reconnect when the stream has been silent for this long.
 const READ_TIMEOUT: Duration = Duration::from_secs(90);
 
@@ -54,7 +59,7 @@ pub fn spawn(api_key: String, hub: Arc<AisHub>) {
 }
 
 async fn connect_and_stream(api_key: &str, hub: &AisHub) -> anyhow::Result<Outcome> {
-    let (ws, _) = tokio::time::timeout(Duration::from_secs(20), tokio_tungstenite::connect_async(STREAM_URL)).await??;
+    let (ws, _) = tokio::time::timeout(Duration::from_secs(20), tokio_tungstenite::connect_async(stream_url())).await??;
     let (mut write, mut read) = ws.split();
 
     let subscription = serde_json::json!({

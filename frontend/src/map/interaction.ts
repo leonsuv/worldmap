@@ -29,8 +29,8 @@ interface Picked {
   subtitle?: string
 }
 
-function fromDeck(layerId: string, object: unknown, lngLat: [number, number]): Picked | null {
-  if (layerId === 'flights') {
+function fromDeck(layerId: string, object: unknown): Picked | null {
+  if (layerId.startsWith('flights')) {
     const f = object as Flight
     return {
       selection: { kind: 'flight', id: f.icao24 },
@@ -38,7 +38,7 @@ function fromDeck(layerId: string, object: unknown, lngLat: [number, number]): P
       subtitle: f.on_ground ? 'On the ground' : `${fmtAltitude(f.altitude)} · ${fmtSpeedMs(f.velocity).split(' · ')[0]}`,
     }
   }
-  if (layerId === 'ships') {
+  if (layerId.startsWith('ships')) {
     const s = object as Ship
     return {
       selection: { kind: 'ship', id: s.mmsi },
@@ -46,7 +46,7 @@ function fromDeck(layerId: string, object: unknown, lngLat: [number, number]): P
       subtitle: `${s.sar ? 'SAR aircraft' : shipTypeLabel(s.ship_type)} · ${fmtKnots(s.speed)}`,
     }
   }
-  if (layerId === 'weather-wind') {
+  if (layerId.startsWith('weather-wind')) {
     const p = object as WeatherPoint
     return {
       selection: { kind: 'weather', id: `${p.lat},${p.lon}`, lngLat: [p.lon, p.lat], props: { ...p } },
@@ -54,7 +54,6 @@ function fromDeck(layerId: string, object: unknown, lngLat: [number, number]): P
       subtitle: 'Click for the 24-hour outlook',
     }
   }
-  void lngLat
   return null
 }
 
@@ -111,7 +110,7 @@ function pick(map: MapLibreMap, x: number, y: number, lngLat: [number, number]):
   const overlay = getOverlay()
   const info = overlay?.pickObject({ x, y, radius: 5 })
   if (info?.object && info.layer) {
-    const picked = fromDeck(info.layer.id, info.object, lngLat)
+    const picked = fromDeck(info.layer.id, info.object)
     if (picked) return picked
   }
   const layers = PICKABLE_LAYERS.filter(id => map.getLayer(id) && map.getLayoutProperty(id, 'visibility') !== 'none')
