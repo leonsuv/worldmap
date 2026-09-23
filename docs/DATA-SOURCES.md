@@ -1,59 +1,30 @@
-# Data source notices
+# Data sources and notices
 
 [Back to WorldMap](../README.md)
 
-## Existing project notice
+WorldMap combines third-party data. Each source has its own license, terms and rate limits; you are responsible for complying with them, especially for commercial use or redistribution.
 
-### Important: Read Before Use
+| Data | Provider | License / terms | Notes |
+|---|---|---|---|
+| Basemap | [CARTO](https://carto.com/basemaps) with [OpenStreetMap](https://www.openstreetmap.org/copyright) data | CARTO basemap terms; ODbL | Free for non-commercial use; larger or commercial use needs a CARTO plan |
+| Aircraft positions, tracks, flight history | [OpenSky Network](https://opensky-network.org) | [OpenSky terms of use](https://opensky-network.org/about/terms-of-use) | Anonymous access is heavily rate-limited; flight history needs an account; cite OpenSky in publications |
+| Vessel positions, navigation aids | [AISstream.io](https://aisstream.io) | AISstream terms | Needs an API key; storing or redistributing AIS data may be regulated in your country |
+| Weather | [Open-Meteo](https://open-meteo.com) | CC BY 4.0; free for non-commercial use | Commercial use needs an API plan |
+| Road traffic | [TomTom](https://developer.tomtom.com) | TomTom terms | Free tier limits apply (map tiles per day) |
+| Place search | [Nominatim](https://nominatim.org) / OpenStreetMap | ODbL; [usage policy](https://operations.osmfoundation.org/policies/nominatim/) | WorldMap sends at most one request per second, caches results and never autocompletes |
+| Airports | [OurAirports](https://ourairports.com/data/) | Public domain | Large and medium airports |
+| Seaports | [NGA World Port Index (Pub. 150)](https://msi.nga.mil/Publications/WPI) | U.S. government work, public domain | |
+| Nuclear plants | [GeoNuclearData](https://github.com/cristianst85/GeoNuclearData) (IAEA PRIS / WNA derived) | ODbL | Units grouped into plants by location |
+| High-voltage lines, pipelines | OpenStreetMap via [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API) | ODbL | Derived tiles are a database under ODbL (attribution and share-alike apply if you distribute them); respect the public Overpass servers' usage policy |
+| Pipelines (optional) | [OGIM](https://zenodo.org/records/15103476), Environmental Defense Fund / MethaneSAT | CC BY 4.0 | |
+| Estimated power grid | [Gridfinder](https://zenodo.org/records/3628142), Arderne et al. 2020 | CC BY 4.0 | Modelled from night-time lights; not a survey |
 
-This software is provided **for educational and research purposes**. By using this software, you acknowledge and accept full responsibility for ensuring your use complies with all applicable laws and regulations in your jurisdiction.
+## Responsible use
 
-### Data Source Terms of Service
+- AIS and flight data are broadcast publicly, but tracking specific vessels or aircraft can be restricted by law in some places. Do not use WorldMap for unlawful surveillance.
+- Infrastructure locations come from public sources. Combining them with other data can still be sensitive; share derived datasets thoughtfully.
+- If you store or process data about identifiable people (for example crews or operators), data protection law such as the GDPR applies.
 
-This application aggregates data from multiple third-party APIs. **Each data source has its own terms of service, rate limits, and usage restrictions.** It is your responsibility to:
+## No warranty
 
-1. **Read and comply with the terms of service** of every API you connect to
-2. **Respect rate limits** — exceeding them may violate the provider's ToS and result in your access being revoked
-3. **Verify commercial use rights** — some APIs (notably Open-Meteo, Nominatim, OpenFreeMap) are free for non-commercial use only. Commercial use may require a paid license or explicit permission
-
-### AIS & Maritime Data
-
-- AIS (Automatic Identification System) data is broadcast publicly over radio frequencies. Receiving and displaying AIS data is generally legal in most jurisdictions.
-- However, **redistributing, storing, or commercially exploiting AIS data** may be subject to national maritime regulations and the data provider's terms.
-- Some jurisdictions restrict tracking of military, government, or certain flagged vessels. Ensure compliance with local maritime law.
-
-### Aviation Data (OpenSky Network)
-
-- OpenSky Network data is provided under their specific [terms of use](https://opensky-network.org/about/terms-of-use).
-- Tracking military aircraft or using flight data for surveillance purposes may be restricted or illegal in certain jurisdictions.
-- If you use OpenSky data in academic publications, proper citation is required.
-
-### Web Scraping & API Usage
-
-- The ingestion scripts in `scripts/` fetch data from various public sources (OurAirports, OpenStreetMap Overpass, GeoNuclearData).
-- **Automated data collection may violate certain websites' terms of service**, even when the data itself is publicly available.
-- Overpass API (OpenStreetMap) has strict [usage policies](https://operations.osmfoundation.org/policies/nominatim/). Heavy or abusive querying is prohibited.
-- Always use appropriate request intervals and respect `robots.txt` where applicable.
-
-### GIS & Map Data
-
-- OpenStreetMap data is licensed under [ODbL](https://opendatacommons.org/licenses/odbl/). If you distribute derived datasets, you must comply with ODbL attribution and share-alike requirements.
-- GeoPackage data used for pipeline and power grid tiles may originate from government open-data portals with their own license terms.
-
-### Nuclear Facility Data
-
-- Nuclear reactor locations are sourced from [GeoNuclearData](https://github.com/cristianst85/GeoNuclearData), which compiles publicly available IAEA data.
-- Displaying nuclear facility locations is legal in most countries, as this information is publicly available through the IAEA. However, combining it with other operational data could raise security concerns in some jurisdictions.
-
-### No Warranty
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. THE AUTHORS ARE NOT LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM THE USE OF THIS SOFTWARE OR THE DATA IT ACCESSES. See [LICENSE](../LICENSE) for the full MIT license text.
-
-### Your Responsibility
-
-- **Do not use this tool for illegal surveillance, military intelligence, or any unlawful purpose.**
-- **Do not redistribute third-party data** without verifying you have the right to do so.
-- **Comply with GDPR** and equivalent data protection laws if you store or process data that could identify individuals (e.g., vessel crew, aircraft operators).
-- When in doubt, consult a legal professional in your jurisdiction.
-
----
+The software is provided "as is", without warranty of any kind. Data can be incomplete, delayed or wrong. See [LICENSE](../LICENSE).

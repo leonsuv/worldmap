@@ -21,10 +21,15 @@ impl Config {
     /// Load `.env` files, then read the configuration from the environment.
     pub fn load() -> Self {
         let root = project_root();
-        // A `.env` in the working directory wins; otherwise use backend/.env.
+        // A `.env` in the working directory wins; otherwise use backend/.env in a
+        // checkout, or the one next to the executable in a release folder.
         if dotenvy::dotenv().is_err() {
-            if let Some(root) = &root {
-                let _ = dotenvy::from_path(root.join("backend").join(".env"));
+            let fallback = match &root {
+                Some(root) => Some(root.join("backend").join(".env")),
+                None => std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join(".env"))),
+            };
+            if let Some(path) = fallback {
+                let _ = dotenvy::from_path(path);
             }
         }
         Self::from_env(root.as_deref())

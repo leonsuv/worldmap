@@ -171,6 +171,7 @@ fn zoom_for_bbox(bbox: Option<&Value>) -> f64 {
 }
 
 pub fn parse_places(data: &Value) -> Vec<SearchResult> {
+    let mut seen = std::collections::HashSet::new();
     data.as_array()
         .map(|items| {
             items
@@ -180,6 +181,10 @@ pub fn parse_places(data: &Value) -> Vec<SearchResult> {
                     let lon: f64 = p.get("lon")?.as_str()?.parse().ok()?;
                     let display = p.get("display_name")?.as_str()?;
                     let (name, detail) = display.split_once(", ").unwrap_or((display, ""));
+                    // Nominatim often returns a city and its municipality under the same name.
+                    if !seen.insert((name.to_string(), detail.to_string())) {
+                        return None;
+                    }
                     Some(SearchResult {
                         kind: "place",
                         id: p.get("place_id").map(|v| v.to_string()).unwrap_or_default(),
@@ -306,7 +311,8 @@ mod tests {
     fn nominatim_results_are_parsed_with_a_fitting_zoom() {
         let data = serde_json::json!([
             { "place_id": 1, "lat": "52.52", "lon": "13.40", "display_name": "Berlin, Germany", "boundingbox": ["52.3", "52.7", "13.0", "13.8"] },
-            { "lat": "bad", "lon": "0", "display_name": "Broken" }
+            { "lat": "bad", "lon": "0", "display_name": "Broken" },
+            { "place_id": 2, "lat": "52.5", "lon": "13.4", "display_name": "Berlin, Germany" }
         ]);
         let places = parse_places(&data);
         assert_eq!(places.len(), 1);

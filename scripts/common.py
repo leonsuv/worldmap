@@ -210,8 +210,13 @@ def write_geojsonseq(path: Path, features: Iterable[dict]) -> int:
 # ── Tile builder ──────────────────────────────────────────────────────────────
 
 def backend_command() -> list[str]:
-    """Command that runs the WorldMap backend binary (building it if needed)."""
+    """Command that runs the WorldMap backend binary (building it in a checkout)."""
     exe = "worldmap-backend.exe" if os.name == "nt" else "worldmap-backend"
+    packaged = ROOT / exe  # release archives ship the binary next to scripts/
+    if not (ROOT / "backend" / "Cargo.toml").exists():
+        if packaged.exists():
+            return [str(packaged)]
+        sys.exit(f"{packaged} not found.")
     binary = ROOT / "backend" / "target" / "release" / exe
     cargo = shutil.which("cargo") or shutil.which(str(Path.home() / ".cargo" / "bin" / "cargo"))
     if cargo:

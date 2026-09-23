@@ -54,7 +54,7 @@ export const LAYERS: LayerDef[] = [
     requires: { kind: 'tiles', tileset: 'hv-lines', command: 'python scripts/build_tiles.py hv-lines' },
   },
   {
-    key: 'pipelines', label: 'Pipelines', group: 'Energy', icon: Factory, color: '#e07a5f', source: 'Oil, gas & hydrogen', attribution: 'OpenStreetMap / OGIM',
+    key: 'pipelines', label: 'Pipelines', group: 'Energy', icon: Factory, color: '#e07a5f', source: 'Oil, gas & hydrogen', attribution: 'OpenStreetMap',
     requires: { kind: 'tiles', tileset: 'pipelines', command: 'python scripts/build_tiles.py pipelines' },
   },
   {

@@ -10,18 +10,17 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ── Check for secrets in code ──
   secret-scan:
-    name: Secret Scan
+    name: Secret scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Scan for secrets
-        uses: trufflesecurity/trufflehog@main
+        with:
+          fetch-depth: 0
+      - uses: trufflesecurity/trufflehog@main
         with:
           extra_args: --only-verified
 
-  # ── Frontend lint + type-check ──
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
@@ -39,24 +38,18 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
 
-  # ── Backend build matrix (Linux, macOS, Windows) ──
   backend:
     name: Backend (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact: worldmap-backend-linux-amd64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact: worldmap-backend-macos-arm64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: worldmap-backend-windows-amd64.exe
+        os: [ubuntu-latest, macos-latest, windows-latest]
     defaults:
       run:
         working-directory: backend
@@ -64,16 +57,63 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
-      - name: Run regression tests
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --check
+      - name: Clippy
+        if: runner.os == 'Linux'
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Tests
         run: cargo test
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+
+  scripts:
+    name: Python scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          name: ${{ matrix.artifact }}
-          path: backend/target/${{ matrix.target }}/release/worldmap-backend${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          python-version: '3.10'
+      - run: python -m py_compile scripts/*.py
+      - run: python scripts/ingest.py --help && python scripts/build_tiles.py --help
+
+  smoke:
+    name: End-to-end smoke test
+    needs: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+      - name: Build backend
+        run: cargo build --manifest-path backend/Cargo.toml
+      - name: Build sample tiles with the native tile builder
+        run: |
+          mkdir -p data/sources data/tiles
+          printf '%s\n' \
+            '{"type":"Feature","geometry":{"type":"LineString","coordinates":[[13.4,52.5],[11.6,48.1]]},"properties":{"voltage_kv":380,"kind":"line"}}' \
+            > data/sources/sample.geojsonl
+          backend/target/debug/worldmap-backend tiles build -o data/tiles/hv-lines.mbtiles -i data/sources/sample.geojsonl -l hvlines -Z 2 -z 8
+          backend/target/debug/worldmap-backend tiles inspect data/tiles/hv-lines.mbtiles
+      - name: Run server and smoke test
+        run: |
+          backend/target/debug/worldmap-backend > server.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:3000/api/status > /dev/null && break; sleep 1; done
+          python scripts/smoke_test.py --write
+          curl -sf http://127.0.0.1:3000/ | grep -q '<div id="root">'
+      - name: Server log
+        if: always()
+        run: cat server.log || true

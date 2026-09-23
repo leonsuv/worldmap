@@ -933,10 +933,17 @@ kbd {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 14px 16px 18px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: 16px;
+}
+
+/* Wide children (tables, forecast strips) scroll inside instead of widening the drawer. */
+.drawer-body > * {
+  min-width: 0;
 }
 
 .drawer-foot {
@@ -1043,6 +1050,7 @@ kbd {
 
 .table {
   width: 100%;
+  table-layout: auto;
   border-collapse: collapse;
   font-size: 12.5px;
   font-variant-numeric: tabular-nums;
@@ -1226,6 +1234,7 @@ kbd {
 }
 
 .forecast {
+  max-width: 100%;
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: 52px;
@@ -1491,9 +1500,9 @@ kbd {
 .timeline {
   position: absolute;
   left: 50%;
-  bottom: calc(var(--gap) + 26px);
+  top: var(--gap);
   transform: translateX(-50%);
-  width: min(620px, calc(100% - var(--panel-w) - var(--gap) * 4));
+  width: min(560px, calc(100% - var(--panel-w) - var(--gap) * 4 - 60px));
   z-index: 15;
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr) auto;
@@ -1684,6 +1693,7 @@ kbd {
   }
   .timeline {
     width: calc(100% - var(--gap) * 2);
+    top: auto;
     bottom: 70px;
     grid-template-columns: auto auto minmax(0, 1fr);
   }
