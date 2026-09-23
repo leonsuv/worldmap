@@ -1,5 +1,5 @@
 # Data files (tiles, databases)
-data/
+/data/
 
 # Frontend build output
 frontend/dist/
