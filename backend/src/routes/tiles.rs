@@ -175,7 +175,22 @@ impl TileIndex {
 }
 
 pub async fn tilejson(State(state): State<Arc<AppState>>, Path(source): Path<String>) -> Result<Json<serde_json::Value>, StatusCode> {
-    let src = state.tiles.get(&source).ok_or(StatusCode::NOT_FOUND)?;
+    let Some(src) = state.tiles.get(&source) else {
+        let layer = live_tiles::find(&source).ok_or(StatusCode::NOT_FOUND)?;
+        let backbone = state.tiles.get(&format!("{}-backbone", layer.id));
+        return Ok(Json(serde_json::json!({
+            "tilejson": "3.0.0",
+            "name": layer.id,
+            "scheme": "xyz",
+            "format": "pbf",
+            "tiles": [format!("/tiles/{}/{{z}}/{{x}}/{{y}}", layer.id)],
+            "minzoom": backbone.map_or(live_tiles::FETCH_ZOOM, |b| b.meta.minzoom as u32),
+            "maxzoom": live_tiles::MAX_ZOOM,
+            "bounds": [-180.0, -85.051129, 180.0, 85.051129],
+            "vector_layers": [{ "id": layer.layer, "fields": {} }],
+            "attribution": "© OpenStreetMap contributors",
+        })));
+    };
     let m = &src.meta;
     let ext = match m.format.as_str() {
         "pbf" | "mvt" => "",
