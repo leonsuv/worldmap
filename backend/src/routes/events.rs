@@ -1,14 +1,19 @@
-use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
-    Json,
-};
+//! Events (storms, outages, closures, …) and the assets inside them.
+
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::Json;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::Arc;
 
+use super::{ApiError, ApiResult};
+use crate::geo::{haversine_km, valid_lat_lon};
 use crate::state::AppState;
 
-#[derive(Serialize, Deserialize, Clone)]
+pub const EVENT_TYPES: [&str; 5] = ["storm", "outage", "closure", "geopolitical", "custom"];
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Event {
     pub id: i64,
     pub name: String,
@@ -38,118 +43,124 @@ fn default_radius() -> f64 {
     50.0
 }
 
+pub fn validate(e: &CreateEvent) -> Result<(), String> {
+    let name = e.name.trim();
+    if name.is_empty() || name.chars().count() > 120 {
+        return Err("name must be 1–120 characters".into());
+    }
+    if !EVENT_TYPES.contains(&e.event_type.as_str()) {
+        return Err(format!("event type must be one of: {}", EVENT_TYPES.join(", ")));
+    }
+    if !valid_lat_lon(e.lat, e.lon) {
+        return Err("latitude must be within ±90 and longitude within ±180".into());
+    }
+    if !(e.radius_km.is_finite() && e.radius_km > 0.0 && e.radius_km <= 5000.0) {
+        return Err("radius must be between 0 and 5,000 km".into());
+    }
+    if e.description.chars().count() > 2000 {
+        return Err("description must be at most 2,000 characters".into());
+    }
+    Ok(())
+}
+
+pub fn load_events(conn: &rusqlite::Connection, active_only: bool) -> anyhow::Result<Vec<Event>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, event_type, lat, lon, radius_km, description, started_at, ended_at, active
+         FROM events WHERE (?1 = 0 OR active = 1) ORDER BY active DESC, started_at DESC, id DESC",
+    )?;
+    let rows = stmt
+        .query_map([active_only as i64], |row| {
+            Ok(Event {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                event_type: row.get(2)?,
+                lat: row.get(3)?,
+                lon: row.get(4)?,
+                radius_km: row.get(5)?,
+                description: row.get(6)?,
+                started_at: row.get(7)?,
+                ended_at: row.get(8)?,
+                active: row.get::<_, i64>(9)? != 0,
+            })
+        })?
+        .filter_map(Result::ok)
+        .collect();
+    Ok(rows)
+}
+
 #[derive(Deserialize)]
 pub struct EventQuery {
     pub active_only: Option<bool>,
 }
 
-/// List all events (optionally only active ones).
-pub async fn list_events(
-    State(state): State<Arc<AppState>>,
-    Query(q): Query<EventQuery>,
-) -> Json<Vec<Event>> {
+pub async fn list(State(state): State<Arc<AppState>>, Query(q): Query<EventQuery>) -> ApiResult<Json<Vec<Event>>> {
     let active_only = q.active_only.unwrap_or(false);
-    let items = state.cache_db.run(move |conn| {
-        let sql = if active_only {
-            "SELECT id, name, event_type, lat, lon, radius_km, description, started_at, ended_at, active FROM events WHERE active = 1 ORDER BY started_at DESC"
-        } else {
-            "SELECT id, name, event_type, lat, lon, radius_km, description, started_at, ended_at, active FROM events ORDER BY started_at DESC"
-        };
-        let mut stmt = conn.prepare(sql)?;
-        let items = stmt
-            .query_map([], |row| {
-                Ok(Event {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    event_type: row.get(2)?,
-                    lat: row.get(3)?,
-                    lon: row.get(4)?,
-                    radius_km: row.get(5)?,
-                    description: row.get(6)?,
-                    started_at: row.get(7)?,
-                    ended_at: row.get(8)?,
-                    active: row.get::<_, i64>(9)? != 0,
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(items)
-    }).await.unwrap_or_default();
-    Json(items)
+    Ok(Json(state.cache_db.run(move |conn| load_events(conn, active_only)).await?))
 }
 
-/// Create a new event and auto-generate alerts for affected watchlist items.
-pub async fn create_event(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<CreateEvent>,
-) -> Result<(StatusCode, Json<Event>), StatusCode> {
-    if body.name.trim().is_empty() || body.name.len() > 200 || !body.lat.is_finite() || !body.lon.is_finite()
-        || body.lat.abs() > 90.0 || body.lon.abs() > 180.0 || !body.radius_km.is_finite()
-        || body.radius_km <= 0.0 || body.radius_km > 20000.0 {
-        return Err(StatusCode::BAD_REQUEST);
-    }
+pub async fn create(State(state): State<Arc<AppState>>, Json(body): Json<CreateEvent>) -> ApiResult<(StatusCode, Json<Event>)> {
+    validate(&body).map_err(ApiError::bad_request)?;
     let now = chrono::Utc::now().timestamp();
-    let event_data = body;
-    let id = state.cache_db.run(move |conn| {
-        conn.execute(
-            "INSERT INTO events (name, event_type, lat, lon, radius_km, description, started_at, active) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
-            rusqlite::params![event_data.name, event_data.event_type, event_data.lat, event_data.lon, event_data.radius_km, event_data.description, now],
-        )?;
-        Ok((conn.last_insert_rowid(), event_data))
-    }).await;
-    match id {
-        Ok((id, body)) => {
-            let event = Event {
-                id,
-                name: body.name.clone(),
-                event_type: body.event_type.clone(),
-                lat: body.lat,
-                lon: body.lon,
-                radius_km: body.radius_km,
-                description: body.description.clone(),
-                started_at: now,
-                ended_at: None,
-                active: true,
-            };
+    let event = Event {
+        id: 0,
+        name: body.name.trim().to_string(),
+        event_type: body.event_type,
+        lat: body.lat,
+        lon: body.lon,
+        radius_km: body.radius_km,
+        description: body.description.trim().to_string(),
+        started_at: now,
+        ended_at: None,
+        active: true,
+    };
+    let e = event.clone();
+    let id = state
+        .cache_db
+        .run(move |conn| {
+            conn.execute(
+                "INSERT INTO events (name, event_type, lat, lon, radius_km, description, started_at, active) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
+                rusqlite::params![e.name, e.event_type, e.lat, e.lon, e.radius_km, e.description, e.started_at],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })
+        .await?;
+    super::alerts::evaluate(&state, Some(id), None).await;
+    Ok((StatusCode::CREATED, Json(Event { id, ..event })))
+}
 
-            // Auto-generate alerts for watchlist items within the event radius
-            generate_alerts_for_event(&state, &event);
-
-            Ok((StatusCode::CREATED, Json(event)))
-        }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+pub async fn close(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> ApiResult<StatusCode> {
+    let now = chrono::Utc::now().timestamp();
+    let changed = state
+        .cache_db
+        .run(move |conn| {
+            Ok(conn.execute("UPDATE events SET active = 0, ended_at = ?1 WHERE id = ?2 AND active = 1", rusqlite::params![now, id])?)
+        })
+        .await?;
+    if changed > 0 {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found("No active event with this id"))
     }
 }
 
-/// Close/deactivate an event.
-pub async fn close_event(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<i64>,
-) -> StatusCode {
-    let now = chrono::Utc::now().timestamp();
-    let changed = state.cache_db.run(move |conn| {
-        Ok(conn.execute(
-            "UPDATE events SET active = 0, ended_at = ?1 WHERE id = ?2",
-            rusqlite::params![now, id],
-        ).unwrap_or(0))
-    }).await.unwrap_or(0);
-    if changed > 0 { StatusCode::NO_CONTENT } else { StatusCode::NOT_FOUND }
+pub async fn delete(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> ApiResult<StatusCode> {
+    let changed = state
+        .cache_db
+        .run(move |conn| {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute("DELETE FROM alerts WHERE event_id = ?1", [id])?;
+            let n = tx.execute("DELETE FROM events WHERE id = ?1", [id])?;
+            tx.commit()?;
+            Ok(n)
+        })
+        .await?;
+    if changed > 0 {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found("Event not found"))
+    }
 }
 
-/// Delete an event entirely.
-pub async fn delete_event(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<i64>,
-) -> StatusCode {
-    let changed = state.cache_db.run(move |conn| {
-        conn.execute("DELETE FROM alerts WHERE event_id = ?1", rusqlite::params![id]).ok();
-        Ok(conn.execute("DELETE FROM events WHERE id = ?1", rusqlite::params![id]).unwrap_or(0))
-    }).await.unwrap_or(0);
-    if changed > 0 { StatusCode::NO_CONTENT } else { StatusCode::NOT_FOUND }
-}
-
-/// Affected assets query: find all live ships, flights, airports, seaports, reactors
-/// within a given event radius.
 #[derive(Deserialize)]
 pub struct AffectedQuery {
     pub event_id: Option<i64>,
@@ -158,188 +169,117 @@ pub struct AffectedQuery {
     pub radius_km: Option<f64>,
 }
 
-#[derive(Serialize)]
-pub struct AffectedAssets {
-    pub ships: Vec<serde_json::Value>,
-    pub airports: Vec<serde_json::Value>,
-    pub seaports: Vec<serde_json::Value>,
-    pub reactors: Vec<serde_json::Value>,
+#[derive(Serialize, Default)]
+pub struct Affected {
+    pub ships: Vec<Value>,
+    pub flights: Vec<Value>,
+    pub airports: Vec<Value>,
+    pub seaports: Vec<Value>,
+    pub reactors: Vec<Value>,
     pub total: usize,
 }
 
-pub async fn get_affected(
-    State(state): State<Arc<AppState>>,
-    Query(q): Query<AffectedQuery>,
-) -> Result<Json<AffectedAssets>, StatusCode> {
-    let (lat, lon, radius_km) = if let Some(eid) = q.event_id {
-        // Look up event
-        let result = state.cache_db.run(move |conn| {
-            conn.query_row(
-                "SELECT lat, lon, radius_km FROM events WHERE id = ?1",
-                rusqlite::params![eid],
-                |row| Ok((row.get::<_, f64>(0)?, row.get::<_, f64>(1)?, row.get::<_, f64>(2)?)),
-            ).map_err(|e| e.into())
-        }).await;
-        match result {
-            Ok(r) => r,
-            Err(_) => return Err(StatusCode::NOT_FOUND),
-        }
-    } else {
-        match (q.lat, q.lon, q.radius_km) {
-            (Some(lat), Some(lon), Some(r)) => (lat, lon, r),
-            _ => return Err(StatusCode::BAD_REQUEST),
-        }
+/// Everything inside a circle, nearest first within each category.
+pub fn affected_assets(state: &AppState, lat: f64, lon: f64, radius_km: f64, flights_rows: Option<&Value>) -> Affected {
+    fn sorted(mut v: Vec<(f64, Value)>) -> Vec<Value> {
+        v.sort_by(|a, b| a.0.total_cmp(&b.0));
+        v.into_iter()
+            .map(|(d, mut item)| {
+                item["distance_km"] = ((d * 10.0).round() / 10.0).into();
+                item
+            })
+            .collect()
+    }
+    let within = |plat: f64, plon: f64| {
+        let d = haversine_km(lat, lon, plat, plon);
+        (d <= radius_km).then_some(d)
     };
-
-    let mut ships = Vec::new();
-    let mut airports = Vec::new();
-    let mut seaports = Vec::new();
-    let mut reactors = Vec::new();
-
-    // Check ships in store
-    for entry in state.ship_store.iter() {
-        let s = entry.value();
-        if haversine_km(lat, lon, s.lat, s.lon) <= radius_km {
-            ships.push(serde_json::json!({
-                "mmsi": s.mmsi, "ship_name": s.ship_name, "ship_type": s.ship_type,
-                "lat": s.lat, "lon": s.lon, "speed": s.speed, "course": s.course,
-                "destination": s.destination, "imo": s.imo,
-            }));
-        }
-    }
-
-    // Check airports
-    if let Some(fc) = state.airports_geojson.get("features").and_then(|v| v.as_array()) {
-        for f in fc {
-            if let Some(coords) = f.pointer("/geometry/coordinates").and_then(|c| c.as_array()) {
-                let alon = coords.first().and_then(|v| v.as_f64()).unwrap_or(0.0);
-                let alat = coords.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
-                if haversine_km(lat, lon, alat, alon) <= radius_km {
-                    if let Some(p) = f.get("properties") {
-                        airports.push(p.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    // Check seaports
-    if let Some(fc) = state.seaports_geojson.get("features").and_then(|v| v.as_array()) {
-        for f in fc {
-            if let Some(coords) = f.pointer("/geometry/coordinates").and_then(|c| c.as_array()) {
-                let plon = coords.first().and_then(|v| v.as_f64()).unwrap_or(0.0);
-                let plat = coords.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
-                if haversine_km(lat, lon, plat, plon) <= radius_km {
-                    if let Some(p) = f.get("properties") {
-                        seaports.push(p.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    // Check reactors (from static_db)
-    let reactor_rows = state.static_db.run(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT name, country, lat, lon, capacity_mw, status, reactor_type FROM nuclear_reactors"
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, f64>(2)?,
-                row.get::<_, f64>(3)?,
-                row.get::<_, f64>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, String>(6)?,
-            ))
-        })?.filter_map(|r| r.ok()).collect::<Vec<_>>();
-        Ok(rows)
-    }).await.unwrap_or_default();
-    for row in reactor_rows {
-        if haversine_km(lat, lon, row.2, row.3) <= radius_km {
-            reactors.push(serde_json::json!({
-                "name": row.0, "country": row.1,
-                "lat": row.2, "lon": row.3,
-                "capacity_mw": row.4, "status": row.5,
-                "reactor_type": row.6,
-            }));
-        }
-    }
-
-    let total = ships.len() + airports.len() + seaports.len() + reactors.len();
-    Ok(Json(AffectedAssets { ships, airports, seaports, reactors, total }))
+    let ds = state.datasets();
+    let ships = state
+        .ais
+        .ships
+        .iter()
+        .filter_map(|s| {
+            within(s.lat, s.lon).map(|d| {
+                (d, serde_json::json!({ "mmsi": s.mmsi, "name": s.name, "ship_type": s.ship_type, "lat": s.lat, "lon": s.lon, "speed": s.speed, "destination": s.destination }))
+            })
+        })
+        .collect();
+    let flights = flights_rows
+        .and_then(|v| v.get("rows"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|r| {
+                    let (flon, flat) = (r.get(3)?.as_f64()?, r.get(4)?.as_f64()?);
+                    within(flat, flon).map(|d| {
+                        (d, serde_json::json!({ "icao24": r.get(0), "callsign": r.get(1), "country": r.get(2), "lat": flat, "lon": flon, "altitude": r.get(5) }))
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let airports =
+        ds.airports.iter().filter_map(|a| within(a.lat, a.lon).map(|d| (d, serde_json::to_value(a).unwrap_or_default()))).collect();
+    let seaports =
+        ds.seaports.iter().filter_map(|p| within(p.lat, p.lon).map(|d| (d, serde_json::to_value(p).unwrap_or_default()))).collect();
+    let reactors = ds
+        .plants
+        .iter()
+        .filter_map(|p| {
+            within(p.lat, p.lon).map(|d| {
+                (d, serde_json::json!({ "name": p.name, "country": p.country, "lat": p.lat, "lon": p.lon, "capacity_mw": p.capacity_mw, "status": p.status }))
+            })
+        })
+        .collect();
+    let mut out = Affected {
+        ships: sorted(ships),
+        flights: sorted(flights),
+        airports: sorted(airports),
+        seaports: sorted(seaports),
+        reactors: sorted(reactors),
+        total: 0,
+    };
+    out.total = out.ships.len() + out.flights.len() + out.airports.len() + out.seaports.len() + out.reactors.len();
+    out
 }
 
-// ─── Helpers ───
-
-fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    let r = 6371.0; // Earth radius in km
-    let dlat = (lat2 - lat1).to_radians();
-    let dlon = (lon2 - lon1).to_radians();
-    let a = (dlat / 2.0).sin().powi(2)
-        + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
-    r * 2.0 * a.sqrt().asin()
-}
-
-/// Check watchlist items against the event and create alerts.
-fn generate_alerts_for_event(state: &AppState, event: &Event) {
+/// Last cached flight rows, if any (never triggers an upstream request).
+pub async fn cached_flights(state: &AppState) -> Option<Value> {
     let db = state.cache_db.clone();
-    let event_id = event.id;
-    let event_lat = event.lat;
-    let event_lon = event.lon;
-    let event_radius_km = event.radius_km;
-    let event_name = event.name.clone();
-    let event_type = event.event_type.clone();
-    let ship_store = state.ship_store.clone();
+    let entry = tokio::task::spawn_blocking(move || db.cache_get("opensky:states:v2")).await.ok()?.ok()??;
+    serde_json::from_slice(&entry.body).ok()
+}
 
-    tokio::spawn(async move {
-        let result = db.run(move |conn| {
-            let mut stmt = conn.prepare("SELECT id, wtype, name, params FROM watchlist")?;
-            let items: Vec<(i64, String, String, String)> = stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
-                .unwrap()
-                .filter_map(|r| r.ok())
-                .collect();
-
-            for (_id, wtype, name, params_str) in items {
-                let params = super::watchlist::parse_params(&params_str);
-                let within = match wtype.as_str() {
-                    "vessel" => {
-                        if let Some(mmsi) = params.get("mmsi").and_then(|v| v.as_u64()) {
-                            ship_store.get(&mmsi).is_some_and( |s| {
-                                haversine_km(event_lat, event_lon, s.lat, s.lon) <= event_radius_km
-                            })
-                        } else {
-                            false
-                        }
-                    }
-                    "port" | "reactor" | "area" | "pipeline" => {
-                        match (params.get("lat").and_then(|v| v.as_f64()), params.get("lon").and_then(|v| v.as_f64())) {
-                            (Some(plat), Some(plon)) => haversine_km(event_lat, event_lon, plat, plon) <= event_radius_km,
-                            _ => false,
-                        }
-                    }
-                    _ => false,
-                };
-
-                if within {
-                    let title = format!("{} affected by {}", name, event_name);
-                    let message = format!(
-                        "{} '{}' is within {:.0}km of event '{}' ({})",
-                        wtype, name, event_radius_km, event_name, event_type
-                    );
-                    let now = chrono::Utc::now().timestamp();
-                    conn.execute(
-                        "INSERT INTO alerts (event_id, title, message, severity, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                        rusqlite::params![event_id, title, message, "warning", now],
-                    ).ok();
-                }
-            }
-            Ok(())
-        }).await;
-        if let Err(e) = result {
-            eprintln!("generate_alerts_for_event error: {e}");
+pub async fn affected(State(state): State<Arc<AppState>>, Query(q): Query<AffectedQuery>) -> ApiResult<Json<Affected>> {
+    let (lat, lon, radius) = match (q.event_id, q.lat, q.lon, q.radius_km) {
+        (Some(id), ..) => {
+            let events = state.cache_db.run(|conn| load_events(conn, false)).await?;
+            let e = events.into_iter().find(|e| e.id == id).ok_or_else(|| ApiError::not_found("Event not found"))?;
+            (e.lat, e.lon, e.radius_km)
         }
-    });
+        (None, Some(lat), Some(lon), Some(r)) if valid_lat_lon(lat, lon) && r > 0.0 && r <= 5000.0 => (lat, lon, r),
+        _ => return Err(ApiError::bad_request("pass event_id, or lat, lon and radius_km")),
+    };
+    let flights = cached_flights(&state).await;
+    Ok(Json(affected_assets(&state, lat, lon, radius, flights.as_ref())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(name: &str, event_type: &str, lat: f64, radius_km: f64) -> CreateEvent {
+        CreateEvent { name: name.into(), event_type: event_type.into(), lat, lon: 0.0, radius_km, description: String::new() }
+    }
+
+    #[test]
+    fn events_are_validated() {
+        assert!(validate(&event("Storm", "storm", 10.0, 50.0)).is_ok());
+        assert!(validate(&event("", "storm", 10.0, 50.0)).is_err());
+        assert!(validate(&event("Storm", "party", 10.0, 50.0)).is_err());
+        assert!(validate(&event("Storm", "storm", 91.0, 50.0)).is_err());
+        assert!(validate(&event("Storm", "storm", 10.0, 0.0)).is_err());
+        assert!(validate(&event("Storm", "storm", 10.0, f64::NAN)).is_err());
+    }
 }

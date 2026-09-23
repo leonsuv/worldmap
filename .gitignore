@@ -31,3 +31,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.code-workspace
+
+# Partial downloads and builds
+*.part

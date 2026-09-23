@@ -1,71 +1,87 @@
-use axum::{extract::{Query, State}, Json};
-use serde::Deserialize;
-use std::sync::Arc;
+//! TomTom traffic-flow raster tiles, proxied so the API key stays on the server.
 
-use crate::cache_proxy::cached_fetch;
+use axum::extract::{Path, Query, State};
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
+use std::sync::{Arc, LazyLock};
+
+use super::tiles::tms_row;
 use crate::state::AppState;
+use crate::upstream;
+
+const TILE_TTL: i64 = 120;
 
 #[derive(Deserialize)]
 pub struct TrafficQuery {
-    bbox: String, // "west,south,east,north"  →  TomTom expects "minLon,minLat,maxLon,maxLat"
+    /// `dark` or `light` basemap.
+    style: Option<String>,
 }
 
-pub async fn get_traffic(
+/// A 1×1 transparent PNG, returned instead of an error so the map stays quiet.
+static EMPTY_PNG: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    use std::io::Write;
+    fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let mut crc = flate2::Crc::new();
+        crc.update(kind);
+        crc.update(data);
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        out.extend_from_slice(&crc.sum().to_be_bytes());
+    }
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    chunk(&mut png, b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    z.write_all(&[0, 0, 0, 0, 0]).expect("in-memory write");
+    chunk(&mut png, b"IDAT", &z.finish().expect("in-memory write"));
+    chunk(&mut png, b"IEND", &[]);
+    png
+});
+
+fn png(body: Vec<u8>, max_age: u32) -> Response {
+    (StatusCode::OK, [(header::CONTENT_TYPE, "image/png".to_string()), (header::CACHE_CONTROL, format!("public, max-age={max_age}"))], body)
+        .into_response()
+}
+
+/// GET /api/traffic/{z}/{x}/{y}
+pub async fn get_tile(
     State(state): State<Arc<AppState>>,
+    Path((z, x, y)): Path<(u32, u32, String)>,
     Query(q): Query<TrafficQuery>,
-) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
-    let center = bbox_to_center(&q.bbox).ok_or(axum::http::StatusCode::BAD_REQUEST)?;
-    let tomtom_key = std::env::var("TOMTOM_API_KEY").ok().filter(|key| !key.trim().is_empty()).ok_or(()).map_err(|_| {
-        tracing::error!("TOMTOM_API_KEY not set");
-        axum::http::StatusCode::SERVICE_UNAVAILABLE
-    })?;
-
-    let cache_key = format!("traffic:{}", q.bbox);
-    // TomTom Traffic Flow Segment Data (free tier: 2500 req/day)
-    let url = format!(
-        "https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?point={}&key={}",
-        center, tomtom_key
-    );
-
-    let raw = cached_fetch(&state, &cache_key, &url, 60)
-        .await
-        .map_err(|_| {
-            tracing::error!("Traffic provider request failed");
-            axum::http::StatusCode::BAD_GATEWAY
-        })?;
-
-    let parsed: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|_| axum::http::StatusCode::BAD_GATEWAY)?;
-
-    Ok(Json(parsed))
-}
-
-/// Convert "west,south,east,north" bbox to a center "lat,lon" string for TomTom.
-fn bbox_to_center(bbox: &str) -> Option<String> {
-    let parts: Vec<f64> = bbox.split(',').map(|s| s.trim().parse::<f64>()).collect::<Result<_, _>>().ok()?;
-    if parts.len() != 4 || parts.iter().any(|v| !v.is_finite()) { return None; }
-    let (west, south, east, north) = (parts[0], parts[1], parts[2], parts[3]);
-    if south < -90.0 || north > 90.0 || south > north || (east - west).abs() > 360.0 { return None; }
-    let lat = (south + north) / 2.0;
-    // MapLibre can return wrapped longitudes; support the antimeridian too.
-    let span = (east - west).rem_euclid(360.0);
-    let lon = (west + span / 2.0 + 180.0).rem_euclid(360.0) - 180.0;
-    Some(format!("{lat},{lon}"))
+) -> Response {
+    let Some(key) = state.config.tomtom_key.clone() else {
+        return super::ApiError::unavailable("Road traffic needs TOMTOM_API_KEY in backend/.env").into_response();
+    };
+    let y: Option<u32> = y.split('.').next().and_then(|v| v.parse().ok());
+    let (Some(y), true) = (y, z <= 22) else { return StatusCode::BAD_REQUEST.into_response() };
+    if tms_row(z, x, y).is_none() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let style = if q.style.as_deref() == Some("dark") { "relative0-dark" } else { "relative0" };
+    let cache_key = format!("traffic:{style}:{z}:{x}:{y}");
+    let url = format!("https://api.tomtom.com/traffic/map/4/tile/flow/{style}/{z}/{x}/{y}.png");
+    let result = upstream::cached(&state.cache_db, &state.providers.tomtom, &cache_key, TILE_TTL, || async {
+        upstream::send(state.http.get(&url).query(&[("key", key.as_str()), ("tileSize", "256")])).await
+    })
+    .await;
+    match result {
+        Ok(fetched) if fetched.body.starts_with(b"\x89PNG") => png(fetched.body, 60),
+        Ok(_) => png(EMPTY_PNG.clone(), 30),
+        Err(e) => {
+            tracing::debug!("Traffic tile {z}/{x}/{y} unavailable: {e}");
+            png(EMPTY_PNG.clone(), 30)
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     #[test]
-    fn rejects_bad_traffic_bounds_instead_of_querying_zero_zero() {
-        for bbox in ["", "x,1,2,3,4", "1,2,3", "0,0,NaN,1", "0,-91,1,2", "0,4,1,2", "0,0,361,1"] {
-            assert!(bbox_to_center(bbox).is_none(), "{bbox}");
-        }
-    }
-    #[test]
-    fn centers_normal_and_wrapped_traffic_bounds() {
-        assert_eq!(bbox_to_center("10,50,14,54"), Some("52,12".into()));
-        assert_eq!(bbox_to_center("170,-10,-170,10"), Some("0,-180".into()));
-        assert_eq!(bbox_to_center("350,50,370,54"), Some("52,0".into()));
+    fn placeholder_png_is_well_formed() {
+        let png = &*super::EMPTY_PNG;
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(png.ends_with(&[0xAE, 0x42, 0x60, 0x82]), "IEND CRC");
+        assert_eq!(&png[12..16], b"IHDR");
     }
 }

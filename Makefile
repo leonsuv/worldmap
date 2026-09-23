@@ -1,57 +1,43 @@
-.PHONY: dev build ingest tiles clean setup
+# Thin wrappers around the cross-platform Python scripts.
+# On Windows without make, run the commands shown next to each target directly.
+PYTHON ?= python3
 
-# ---------- Development -------------------------------------------------------
+.PHONY: help setup dev build ingest tiles hv-lines pipelines power-grid test smoke clean
 
-dev:                          ## Start backend + frontend dev servers
-	@bash scripts/dev.sh
+help:                  ## Show this help
+	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
-# ---------- Production build --------------------------------------------------
+setup:                 ## Install dependencies and import datasets   (python scripts/setup.py)
+	$(PYTHON) scripts/setup.py
 
-build: build-frontend build-backend   ## Full production build
+dev:                   ## Run backend + frontend dev servers          (python scripts/dev.py)
+	$(PYTHON) scripts/dev.py
 
-build-frontend:
-	cd frontend && npm install && npm run build
-
-build-backend:
+build:                 ## Production build of frontend and backend
+	cd frontend && npm ci && npm run build
 	cd backend && cargo build --release
 
-# ---------- Data ingestion ----------------------------------------------------
+ingest:                ## Import airports, seaports, nuclear plants   (python scripts/ingest.py)
+	$(PYTHON) scripts/ingest.py
 
-ingest: ingest-airports ingest-seaports ingest-reactors   ## Run all ingestion scripts
-	@echo "✓ All ingestion complete"
+tiles:                 ## Build all optional network tile layers      (python scripts/build_tiles.py all)
+	$(PYTHON) scripts/build_tiles.py all
 
-ingest-airports:
-	cd scripts && python3 ingest_airports.py
+hv-lines:              ## Build high-voltage line tiles (OpenStreetMap)
+	$(PYTHON) scripts/build_tiles.py hv-lines
 
-ingest-seaports:
-	cd scripts && python3 ingest_seaports.py
+pipelines:             ## Build pipeline tiles (OpenStreetMap)
+	$(PYTHON) scripts/build_tiles.py pipelines
 
-ingest-reactors:
-	cd scripts && python3 ingest_reactors.py
+power-grid:            ## Build estimated power-grid tiles (Gridfinder)
+	$(PYTHON) scripts/build_tiles.py power-grid
 
-tiles:                        ## Build vector tiles from GeoPackage sources
-	bash scripts/build_tiles.sh
+test:                  ## Run all unit tests and linters
+	cd frontend && npm run lint && npm test
+	cd backend && cargo clippy --all-targets -- -D warnings && cargo test
 
-grid-tiles:                   ## Download & build power-grid + HV-line tiles
-	bash scripts/build_grid_tiles.sh
+smoke:                 ## HTTP smoke test against a running backend   (python scripts/smoke_test.py)
+	$(PYTHON) scripts/smoke_test.py
 
-pipeline-tiles:               ## Download & build pipeline tiles
-	bash scripts/build_pipeline_tiles.sh
-
-# ---------- Setup -------------------------------------------------------------
-
-setup:                        ## One-time project setup
-	@bash scripts/setup.sh
-
-# ---------- Clean -------------------------------------------------------------
-
-clean:                        ## Remove build artifacts
-	rm -rf frontend/dist
-	rm -rf backend/target
-	@echo "✓ Cleaned build artifacts"
-
-# ---------- Help --------------------------------------------------------------
-
-help:                         ## Show this help
-	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
+clean:                 ## Remove build output
+	rm -rf frontend/dist backend/target

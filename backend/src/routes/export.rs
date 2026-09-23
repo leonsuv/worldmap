@@ -1,147 +1,193 @@
-use axum::{
-    extract::{Query, State},
-    http::{header, StatusCode},
-    response::IntoResponse,
-    Json,
-};
+//! CSV exports and the situation report.
+
+use axum::extract::{Query, State};
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::fmt::Write as _;
 use std::sync::Arc;
 
+use super::events::{affected_assets, cached_flights, load_events};
+use super::watchlist::load_items;
+use super::{ApiError, ApiResult};
 use crate::state::AppState;
+
+/// id, event_id, title, message, severity, acknowledged, created_at
+type AlertRow = (i64, Option<i64>, String, String, String, bool, i64);
 
 #[derive(Deserialize)]
 pub struct ExportQuery {
-    /// "ships", "events", "alerts", "watchlist", "affected"
+    /// ships, events, alerts, watchlist or affected
     pub r#type: String,
-    /// For affected: event_id
     pub event_id: Option<i64>,
 }
 
-/// Export data as CSV with appropriate Content-Disposition header.
-pub async fn export_csv(
-    State(state): State<Arc<AppState>>,
-    Query(q): Query<ExportQuery>,
-) -> impl IntoResponse {
-    let (filename, csv) = match q.r#type.as_str() {
-        "ships" => {
-            let mut out = String::from("mmsi,ship_name,lat,lon,speed,course,heading,ship_type,imo,callsign,destination\n");
-            for entry in state.ship_store.iter() {
-                let s = entry.value();
-                out.push_str(&format!(
-                    "{},{},{},{},{},{},{},{},{},{},{}\n",
-                    s.mmsi,
-                    csv_escape(&s.ship_name),
-                    s.lat, s.lon,
-                    opt_f64(s.speed), opt_f64(s.course), opt_f64(s.heading),
-                    s.ship_type.map(|v| v.to_string()).unwrap_or_default(),
-                    s.imo.map(|v| v.to_string()).unwrap_or_default(),
-                    s.callsign.as_deref().unwrap_or(""),
-                    csv_escape(s.destination.as_deref().unwrap_or("")),
-                ));
-            }
-            ("ships.csv", out)
-        }
-        "events" => {
-            let csv_body = state.cache_db.run(|conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT id, name, event_type, lat, lon, radius_km, description, started_at, ended_at, active FROM events ORDER BY started_at DESC"
-                )?;
-                let mut out = String::from("id,name,event_type,lat,lon,radius_km,description,started_at,ended_at,active\n");
-                let mut rows = stmt.query([])?;
-                while let Some(row) = rows.next()? {
-                    let id: i64 = row.get(0)?;
-                    let name: String = row.get(1)?;
-                    let etype: String = row.get(2)?;
-                    let lat: f64 = row.get(3)?;
-                    let lon: f64 = row.get(4)?;
-                    let radius: f64 = row.get(5)?;
-                    let desc: String = row.get(6).unwrap_or_default();
-                    let started: i64 = row.get(7)?;
-                    let ended: Option<i64> = row.get(8)?;
-                    let active: bool = row.get::<_, i64>(9)? != 0;
-                    out.push_str(&format!(
-                        "{},{},{},{},{},{},{},{},{},{}\n",
-                        id, csv_escape(&name), etype, lat, lon, radius,
-                        csv_escape(&desc), started,
-                        ended.map(|v| v.to_string()).unwrap_or_default(),
-                        active,
-                    ));
-                }
-                Ok(out)
-            }).await.unwrap_or_default();
-            ("events.csv", csv_body)
-        }
-        "alerts" => {
-            let csv_body = state.cache_db.run(|conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT id, event_id, title, message, severity, acknowledged, created_at FROM alerts ORDER BY created_at DESC"
-                )?;
-                let mut out = String::from("id,event_id,title,message,severity,acknowledged,created_at\n");
-                let mut rows = stmt.query([])?;
-                while let Some(row) = rows.next()? {
-                    let id: i64 = row.get(0)?;
-                    let event_id: Option<i64> = row.get(1)?;
-                    let title: String = row.get(2)?;
-                    let message: String = row.get(3)?;
-                    let severity: String = row.get(4)?;
-                    let ack: bool = row.get::<_, i64>(5)? != 0;
-                    let created: i64 = row.get(6)?;
-                    out.push_str(&format!(
-                        "{},{},{},{},{},{},{}\n",
-                        id,
-                        event_id.map(|v| v.to_string()).unwrap_or_default(),
-                        csv_escape(&title), csv_escape(&message),
-                        severity, ack, created,
-                    ));
-                }
-                Ok(out)
-            }).await.unwrap_or_default();
-            ("alerts.csv", csv_body)
-        }
-        "watchlist" => {
-            let csv_body = state.cache_db.run(|conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT id, wtype, name, params, created_at FROM watchlist ORDER BY created_at DESC"
-                )?;
-                let mut out = String::from("id,type,name,params,created_at\n");
-                let mut rows = stmt.query([])?;
-                while let Some(row) = rows.next()? {
-                    let id: i64 = row.get(0)?;
-                    let wtype: String = row.get(1)?;
-                    let name: String = row.get(2)?;
-                    let params: String = row.get(3).unwrap_or_default();
-                    let created: i64 = row.get(4)?;
-                    out.push_str(&format!(
-                        "{},{},{},{},{}\n",
-                        id, wtype, csv_escape(&name), csv_escape(&params), created,
-                    ));
-                }
-                Ok(out)
-            }).await.unwrap_or_default();
-            ("watchlist.csv", csv_body)
-        }
-        _ => return (StatusCode::BAD_REQUEST, "Unknown export type").into_response(),
-    };
+/// Quote a CSV field and neutralise spreadsheet formulas.
+pub fn field(value: &str) -> String {
+    let value = if value.starts_with(['=', '+', '-', '@', '\t', '\r']) { format!("'{value}") } else { value.to_string() };
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value
+    }
+}
 
+fn opt<T: ToString>(v: Option<T>) -> String {
+    v.map(|v| v.to_string()).unwrap_or_default()
+}
+
+fn iso(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0).map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string()).unwrap_or_default()
+}
+
+fn value_str(v: &Value, key: &str) -> String {
+    match v.get(key) {
+        Some(Value::String(s)) => field(s),
+        Some(Value::Null) | None => String::new(),
+        Some(other) => other.to_string(),
+    }
+}
+
+fn csv(filename: &str, body: String) -> Response {
     (
         StatusCode::OK,
         [
-            (header::CONTENT_TYPE, "text/csv; charset=utf-8"),
-            (header::CONTENT_DISPOSITION, &format!("attachment; filename=\"{filename}\"")),
+            (header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()),
+            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{filename}\"")),
+            (header::CACHE_CONTROL, "no-store".to_string()),
         ],
-        csv,
-    ).into_response()
+        // A BOM makes spreadsheet applications detect UTF-8.
+        format!("\u{feff}{body}"),
+    )
+        .into_response()
 }
 
-/// Situation report as structured JSON (for PDF rendering on frontend).
-#[derive(Serialize)]
-pub struct SituationReport {
-    pub generated_at: i64,
-    pub total_ships: usize,
-    pub total_events: i64,
-    pub active_events: Vec<EventSummary>,
-    pub unacknowledged_alerts: i64,
-    pub watchlist_count: i64,
+pub async fn export_csv(State(state): State<Arc<AppState>>, Query(q): Query<ExportQuery>) -> ApiResult<Response> {
+    let date = chrono::Utc::now().format("%Y-%m-%d");
+    match q.r#type.as_str() {
+        "ships" => {
+            let mut out =
+                String::from("mmsi,name,lat,lon,speed_kn,course,heading,ship_type,imo,callsign,destination,eta,length_m,last_report\n");
+            let mut ships = state.ais.all_ships();
+            ships.sort_by_key(|s| s.mmsi);
+            for s in ships {
+                let _ = writeln!(
+                    out,
+                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                    s.mmsi,
+                    field(&s.name),
+                    s.lat,
+                    s.lon,
+                    opt(s.speed),
+                    opt(s.course),
+                    opt(s.heading),
+                    opt(s.ship_type),
+                    opt(s.imo),
+                    field(s.callsign.as_deref().unwrap_or("")),
+                    field(s.destination.as_deref().unwrap_or("")),
+                    field(s.eta.as_deref().unwrap_or("")),
+                    opt(s.length),
+                    iso(s.timestamp)
+                );
+            }
+            Ok(csv(&format!("vessels-{date}.csv"), out))
+        }
+        "events" => {
+            let events = state.cache_db.run(|conn| load_events(conn, false)).await?;
+            let mut out = String::from("id,name,type,lat,lon,radius_km,description,started,ended,active\n");
+            for e in events {
+                let _ = writeln!(
+                    out,
+                    "{},{},{},{},{},{},{},{},{},{}",
+                    e.id,
+                    field(&e.name),
+                    e.event_type,
+                    e.lat,
+                    e.lon,
+                    e.radius_km,
+                    field(&e.description),
+                    iso(e.started_at),
+                    e.ended_at.map(iso).unwrap_or_default(),
+                    e.active
+                );
+            }
+            Ok(csv(&format!("events-{date}.csv"), out))
+        }
+        "alerts" => {
+            let rows: Vec<AlertRow> = state
+                .cache_db
+                .run(|conn| {
+                    let mut stmt = conn.prepare(
+                        "SELECT id, event_id, title, message, severity, acknowledged, created_at FROM alerts ORDER BY created_at DESC",
+                    )?;
+                    let rows = stmt
+                        .query_map([], |r| {
+                            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get::<_, i64>(5)? != 0, r.get(6)?))
+                        })?
+                        .filter_map(Result::ok)
+                        .collect();
+                    Ok(rows)
+                })
+                .await?;
+            let mut out = String::from("id,event_id,title,message,severity,acknowledged,created\n");
+            for (id, event, title, message, severity, ack, created) in rows {
+                let _ = writeln!(out, "{id},{},{},{},{severity},{ack},{}", opt(event), field(&title), field(&message), iso(created));
+            }
+            Ok(csv(&format!("alerts-{date}.csv"), out))
+        }
+        "watchlist" => {
+            let items = state.cache_db.run(load_items).await?;
+            let mut out = String::from("id,type,name,mmsi,lat,lon,radius_km,created\n");
+            for i in items {
+                let p = &i.params;
+                let _ = writeln!(
+                    out,
+                    "{},{},{},{},{},{},{},{}",
+                    i.id,
+                    i.wtype,
+                    field(&i.name),
+                    value_str(p, "mmsi"),
+                    value_str(p, "lat"),
+                    value_str(p, "lon"),
+                    value_str(p, "radius_km"),
+                    iso(i.created_at)
+                );
+            }
+            Ok(csv(&format!("watchlist-{date}.csv"), out))
+        }
+        "affected" => {
+            let id = q.event_id.ok_or_else(|| ApiError::bad_request("affected export needs event_id"))?;
+            let events = state.cache_db.run(|conn| load_events(conn, false)).await?;
+            let e = events.into_iter().find(|e| e.id == id).ok_or_else(|| ApiError::not_found("Event not found"))?;
+            let flights = cached_flights(&state).await;
+            let a = affected_assets(&state, e.lat, e.lon, e.radius_km, flights.as_ref());
+            let mut out = String::from("category,id,name,lat,lon,distance_km\n");
+            let groups: [(&str, &Vec<Value>, &str, &str); 5] = [
+                ("vessel", &a.ships, "mmsi", "name"),
+                ("aircraft", &a.flights, "icao24", "callsign"),
+                ("airport", &a.airports, "ident", "name"),
+                ("seaport", &a.seaports, "locode", "name"),
+                ("nuclear_plant", &a.reactors, "name", "name"),
+            ];
+            for (category, items, id_key, name_key) in groups {
+                for item in items {
+                    let _ = writeln!(
+                        out,
+                        "{category},{},{},{},{},{}",
+                        value_str(item, id_key),
+                        value_str(item, name_key),
+                        value_str(item, "lat"),
+                        value_str(item, "lon"),
+                        value_str(item, "distance_km")
+                    );
+                }
+            }
+            Ok(csv(&format!("event-{id}-affected-{date}.csv"), out))
+        }
+        _ => Err(ApiError::bad_request("type must be ships, events, alerts, watchlist or affected")),
+    }
 }
 
 #[derive(Serialize)]
@@ -154,97 +200,69 @@ pub struct EventSummary {
     pub radius_km: f64,
     pub description: String,
     pub started_at: i64,
-    pub affected_count: usize,
+    pub vessels: usize,
+    pub aircraft: usize,
+    pub airports: usize,
+    pub seaports: usize,
+    pub nuclear_plants: usize,
 }
 
-pub async fn situation_report(
-    State(state): State<Arc<AppState>>,
-) -> Json<SituationReport> {
-    let now = chrono::Utc::now().timestamp();
-    let total_ships = state.ship_store.len();
+pub async fn situation_report(State(state): State<Arc<AppState>>) -> ApiResult<Json<Value>> {
+    let (events, alerts_open, watch_count): (Vec<_>, i64, i64) = state
+        .cache_db
+        .run(|conn| {
+            let events = load_events(conn, true)?;
+            let alerts: i64 = conn.query_row("SELECT COUNT(*) FROM alerts WHERE acknowledged = 0", [], |r| r.get(0))?;
+            let watch: i64 = conn.query_row("SELECT COUNT(*) FROM watchlist", [], |r| r.get(0))?;
+            Ok((events, alerts, watch))
+        })
+        .await?;
+    let flights = cached_flights(&state).await;
+    let summaries: Vec<EventSummary> = events
+        .into_iter()
+        .map(|e| {
+            let a = affected_assets(&state, e.lat, e.lon, e.radius_km, flights.as_ref());
+            EventSummary {
+                id: e.id,
+                name: e.name,
+                event_type: e.event_type,
+                lat: e.lat,
+                lon: e.lon,
+                radius_km: e.radius_km,
+                description: e.description,
+                started_at: e.started_at,
+                vessels: a.ships.len(),
+                aircraft: a.flights.len(),
+                airports: a.airports.len(),
+                seaports: a.seaports.len(),
+                nuclear_plants: a.reactors.len(),
+            }
+        })
+        .collect();
+    let ds = state.datasets();
+    Ok(Json(serde_json::json!({
+        "generated_at": chrono::Utc::now().timestamp(),
+        "vessels_tracked": state.ais.ships.len(),
+        "aircraft_tracked": flights.as_ref().and_then(|f| f.get("rows")).and_then(Value::as_array).map(|r| r.len()),
+        "airports": ds.airports.len(),
+        "seaports": ds.seaports.len(),
+        "nuclear_plants": ds.plants.len(),
+        "active_events": summaries,
+        "unacknowledged_alerts": alerts_open,
+        "watchlist_items": watch_count,
+    })))
+}
 
-    let ship_store = state.ship_store.clone();
-    let report_data = state.cache_db.run(move |conn| {
-        let total_events: i64 = conn
-            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
-            .unwrap_or(0);
-        let unacknowledged_alerts: i64 = conn
-            .query_row("SELECT COUNT(*) FROM alerts WHERE acknowledged = 0", [], |r| r.get(0))
-            .unwrap_or(0);
-        let watchlist_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM watchlist", [], |r| r.get(0))
-            .unwrap_or(0);
+#[cfg(test)]
+mod tests {
+    use super::field;
 
-        let mut stmt = conn.prepare(
-            "SELECT id, name, event_type, lat, lon, radius_km, description, started_at FROM events WHERE active = 1"
-        )?;
-        let active_events: Vec<EventSummary> = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, f64>(3)?,
-                    row.get::<_, f64>(4)?,
-                    row.get::<_, f64>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, i64>(7)?,
-                ))
-            })?
-            .filter_map(|r| r.ok())
-            .map(|(id, name, event_type, lat, lon, radius_km, description, started_at)| {
-                let affected_count = ship_store.iter().filter(|entry| {
-                    let s = entry.value();
-                    haversine_km(lat, lon, s.lat, s.lon) <= radius_km
-                }).count();
-                EventSummary { id, name, event_type, lat, lon, radius_km, description, started_at, affected_count }
-            })
-            .collect();
-
-        Ok((total_events, unacknowledged_alerts, watchlist_count, active_events))
-    }).await;
-
-    match report_data {
-        Ok((total_events, unacknowledged_alerts, watchlist_count, active_events)) => {
-            Json(SituationReport {
-                generated_at: now,
-                total_ships,
-                total_events,
-                active_events,
-                unacknowledged_alerts,
-                watchlist_count,
-            })
-        }
-        Err(_) => {
-            Json(SituationReport {
-                generated_at: now,
-                total_ships,
-                total_events: 0,
-                active_events: vec![],
-                unacknowledged_alerts: 0,
-                watchlist_count: 0,
-            })
-        }
+    #[test]
+    fn csv_fields_are_quoted_and_formula_safe() {
+        assert_eq!(field("plain"), "plain");
+        assert_eq!(field("a,b"), "\"a,b\"");
+        assert_eq!(field("say \"hi\""), "\"say \"\"hi\"\"\"");
+        assert_eq!(field("=HYPERLINK(1)"), "'=HYPERLINK(1)");
+        assert_eq!(field("-5"), "'-5");
     }
-}
-
-fn csv_escape(s: &str) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') {
-        format!("\"{}\"", s.replace('"', "\"\""))
-    } else {
-        s.to_string()
-    }
-}
-
-fn opt_f64(v: Option<f64>) -> String {
-    v.map(|f| f.to_string()).unwrap_or_default()
-}
-
-fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    let r = 6371.0;
-    let dlat = (lat2 - lat1).to_radians();
-    let dlon = (lon2 - lon1).to_radians();
-    let a = (dlat / 2.0).sin().powi(2)
-        + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
-    r * 2.0 * a.sqrt().asin()
 }
